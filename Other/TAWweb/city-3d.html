@@ -20,7 +20,14 @@
     -webkit-user-select:none;user-select:none;
     -webkit-tap-highlight-color:transparent;
   }
-  #gl{display:block;width:100vw;height:100vh;cursor:grab}
+  /* touch-action:none 是触摸操作的前提：交给 Pointer Events 处理，
+     否则浏览器会先接管轻扫（滚动/回弹）与双指缩放，pointermove 直接断流。
+     overscroll-behavior 顺手关掉边缘回弹。 */
+  #gl{
+    display:block;width:100vw;height:100vh;cursor:grab;
+    touch-action:none;overscroll-behavior:none;
+    -webkit-user-select:none;user-select:none;-webkit-touch-callout:none;
+  }
   #gl.dragging{cursor:grabbing}
 
   .panel{
@@ -62,6 +69,58 @@
     position:fixed;inset:0;display:none;place-items:center;text-align:center;
     background:#05070f;padding:32px;font-size:15px;line-height:2;color:#ff9db4;
   }
+
+  /* ==================== 触摸操作 ====================
+     指针设备（鼠标）与键盘：保持原有交互，隐藏触摸专用 UI。
+     触摸设备：显示一排可点按的按钮与对应的手势说明，
+     并保证每个可点区域 ≥ 48px。 */
+  .touch-only{display:none}
+  .mouse-only{display:inline}
+  body.touch .touch-only{display:block}
+  body.touch .mouse-only{display:none}
+
+  /* 触摸块存在时，说明面板整体上移，避免被底部按钮栏压住 */
+  body.touch #help{font-size:13px;line-height:1.9;max-width:min(78vw,340px);bottom:120px;padding:11px 13px}
+  body.touch #help p{margin:0}
+
+  #touchbar{
+    position:fixed;left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom));
+    display:none;flex-wrap:wrap;justify-content:center;gap:8px;
+    pointer-events:none;                     /* 只让按钮本身可点，其余区域留给画布手势 */
+  }
+  body.touch #touchbar{display:flex}
+
+  /* 按钮只放图形：中文标签在窄屏会被压成半个字，语义交给 title / aria-label */
+  .tbtn{
+    flex:0 1 auto;min-width:58px;min-height:52px;
+    display:flex;align-items:center;justify-content:center;
+    font:inherit;font-size:20px;line-height:1;color:var(--txt);
+    background:var(--panel);border:1px solid var(--line);border-radius:14px;cursor:pointer;
+    -webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);
+    box-shadow:0 8px 26px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.06);
+    touch-action:manipulation;                /* 去掉 300ms 点按延迟与双击缩放 */
+    pointer-events:auto;-webkit-user-select:none;user-select:none;
+    -webkit-tap-highlight-color:transparent;
+    transition:transform .12s, background .15s, border-color .15s;
+  }
+  .tbtn:active{
+    transform:scale(.92);
+    background:rgba(95,208,255,.22);border-color:rgba(95,208,255,.55);
+  }
+  .tbtn[data-on="1"]{
+    background:rgba(95,208,255,.22);border-color:rgba(95,208,255,.55);color:#eaf6ff;
+  }
+
+  /* 矮屏（横屏手机）：面板与按钮都收一收，把纵向空间还给画面 */
+  @media (max-height:520px){
+    body.touch #help{bottom:100px;font-size:12px;line-height:1.75;max-width:min(62vw,300px)}
+    body.touch #help .bg-info{display:none}
+    body.touch #info{min-width:0;padding:9px 11px;font-size:11px;max-width:46vw}
+    body.touch #info h1{font-size:13px;margin-bottom:6px}
+    body.touch #info .row{font-size:11px;line-height:1.6}
+    body.touch #clock{font-size:17px;margin-top:6px;padding-top:6px}
+    body.touch .tbtn{min-width:50px;min-height:44px;font-size:18px}
+  }
 </style>
 </head>
 <body>
@@ -82,15 +141,31 @@
 </div>
 
 <div class="panel" id="help">
-  <b>拖拽</b> 旋转 &nbsp;·&nbsp; <b>滚轮</b> 缩放 &nbsp;·&nbsp; <b>右键/Shift 拖拽</b> 平移<br>
-  <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 平移 ·
-  <kbd>空格</kbd> 自动巡航 ·
-  <kbd>T</kbd> 暂停时间 ·
-  <kbd>N</kbd> 昼夜切换 ·
-  <kbd>R</kbd> 重置视角<br>
-  <span style="opacity:.62">30×30 街区 · 河道蜿蜒穿过市区 · 拱桥 · 右侧通行车流<br>
+  <p class="mouse-only">
+    <b>拖拽</b> 旋转 &nbsp;·&nbsp; <b>滚轮</b> 缩放 &nbsp;·&nbsp; <b>右键/Shift 拖拽</b> 平移<br>
+    <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 平移 ·
+    <kbd>空格</kbd> 自动巡航 ·
+    <kbd>T</kbd> 暂停时间 ·
+    <kbd>N</kbd> 昼夜切换 ·
+    <kbd>R</kbd> 重置视角
+  </p>
+  <p class="touch-only">
+    <b>单指拖拽</b> 旋转 · <b>双指捏合</b> 缩放 · <b>双指拖动</b> 平移<br>
+    <b>双击画面</b> 重置视角 · 下方按钮 巡航 / 暂停时间 / 昼夜
+  </p>
+  <p style="opacity:.62" class="bg-info">30×30 街区 · 河道蜿蜒穿过市区 · 拱桥 · 右侧通行车流<br>
   四座地标：电视塔 / 金字塔 / 穹顶大殿 / 玻璃尖塔<br>
-  环路以内是主城区，以外是依山而建的坡屋顶别墅区 · 高架快速路与两座立交</span>
+  环路以内是主城区，以外是依山而建的坡屋顶别墅区 · 高架快速路与两座立交</p>
+</div>
+
+<!-- 触摸设备专用：常驻操作按钮（桌面端隐藏；矮屏自动换行） -->
+<div id="touchbar">
+  <button class="tbtn" data-act="zoomout"  type="button" title="缩小"     aria-label="缩小">－</button>
+  <button class="tbtn" data-act="zoomin"   type="button" title="放大"     aria-label="放大">＋</button>
+  <button class="tbtn" data-act="tour"     type="button" title="自动巡航" aria-label="自动巡航">▶</button>
+  <button class="tbtn" data-act="time"     type="button" title="暂停时间" aria-label="暂停时间">⏱</button>
+  <button class="tbtn" data-act="daynight" type="button" title="昼夜切换" aria-label="昼夜切换">☀</button>
+  <button class="tbtn" data-act="reset"    type="button" title="重置视角" aria-label="重置视角">⟲</button>
 </div>
 
 <div id="err"></div>
@@ -1848,6 +1923,27 @@ let timeOfDay = 0.70; // 0=午夜 0.25=日出 0.5=正午 0.75=日落
 let timePaused = false;
 const DAY_SECONDS = 150;
 
+/* 可选 URL 参数（不影响默认行为）：
+     ?t=0.90       起始时刻，0=午夜 0.5=正午（用来截图 / 分享夜景）
+     ?paused=1     启动时暂停时间
+     ?tour=1       启动即自动巡航
+     ?dist=620     起始相机距离（40..1500）
+     ?touch=1 / 0  强制打开 / 关闭触摸操作界面（默认自动识别；用于调试与嵌入）
+   注意：?tour 与 ?dist 作用在相机状态上，必须等 cam / autoTour 声明之后再套用，
+   否则会命中 let 的暂时性死区直接报错（页面整段脚本都会挂掉）。 */
+const QS = (() => {
+  try { return new URLSearchParams(location.search); } catch (e) { return new URLSearchParams(''); }
+})();
+function qNum(key, min, max) {
+  const v = parseFloat(QS.get(key));
+  return isFinite(v) ? clamp(v, min, max) : null;
+}
+{
+  const t = qNum('t', 0, 1);
+  if (t !== null) timeOfDay = t;
+  if (QS.get('paused') === '1') timePaused = true;
+}
+
 function sunDirection(t) {
   const a = (t - 0.25) * Math.PI * 2;
   return normalize3([Math.cos(a), Math.sin(a) * Math.cos(TILT), Math.sin(a) * Math.sin(TILT)]);
@@ -1900,6 +1996,67 @@ const cam = {
 const CAM_DEFAULT = JSON.parse(JSON.stringify(cam));
 let autoTour = false;
 
+/* ?tour 与 ?dist 在这里套用：此时 cam / autoTour 都已声明（见上方关于暂时性死区的说明） */
+const urlDist = qNum('dist', 40, 1500);    // 与后文的 ZOOM_MIN / ZOOM_MAX 同一范围
+{
+  if (QS.get('tour') === '1') autoTour = true;
+  if (urlDist !== null) { CAM_DEFAULT.dist = urlDist; cam.dist = urlDist; }
+}
+
+/* 相机补间：触摸端的双击重置、加减号按钮用它平滑过渡，避免视角瞬移。
+   （已有的滚轮缩放本来就带一点惯性感，只有按钮和重置需要补间。） */
+const camAnim = { on: false, t: 0, dur: 0.55,
+  from: { target: [0, 0, 0], dist: 0, yaw: 0, pitch: 0 },
+  to:   { target: [0, 0, 0], dist: 0, yaw: 0, pitch: 0 } };
+const shortestAngle = d => ((d + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
+
+function startCamAnim(to, dur) {
+  camAnim.on = true;
+  camAnim.t = 0;
+  camAnim.dur = dur || 0.55;
+  camAnim.from.target = cam.target.slice();
+  camAnim.from.dist = cam.dist; camAnim.from.yaw = cam.yaw; camAnim.from.pitch = cam.pitch;
+  camAnim.to.target = to.target.slice();
+  camAnim.to.dist = to.dist; camAnim.to.yaw = to.yaw; camAnim.to.pitch = to.pitch;
+}
+
+function resetCamera(animate) {
+  autoTour = false;
+  zoomSmooth = false;                  // 重置即锚定当前距离，取消未完成的缩放
+  const to = { target: CAM_DEFAULT.target.slice(), dist: CAM_DEFAULT.dist,
+               yaw: CAM_DEFAULT.yaw, pitch: CAM_DEFAULT.pitch };
+  if (animate === false) {
+    cam.target = to.target.slice();
+    cam.dist = to.dist; cam.yaw = to.yaw; cam.pitch = to.pitch;
+    camAnim.on = false;
+    return;
+  }
+  // 偏航按最短弧回正，免得为了转到同一个朝向整整转一圈
+  to.yaw = cam.yaw + shortestAngle(CAM_DEFAULT.yaw - cam.yaw);
+  startCamAnim(to, 0.6);
+}
+
+/* 触摸端的缩放按钮：走和滚轮 / 捏合同一条缩放缓动，连点可连续推近拉远 */
+function zoomStep(factor) {
+  const base = zoomSmooth ? zoomTarget : cam.dist;
+  zoomTarget = clamp(base * factor, ZOOM_MIN, ZOOM_MAX);
+  zoomSmooth = true;
+  camAnim.on = false;
+}
+
+function updateCameraTween(dt) {
+  if (!camAnim.on) return;
+  camAnim.t = Math.min(1, camAnim.t + dt / camAnim.dur);
+  const k = camAnim.t * camAnim.t * (3 - 2 * camAnim.t);      // 与全站一致的三次缓动
+  const A = camAnim.from, B = camAnim.to;
+  for (let i = 0; i < 3; i++) cam.target[i] = lerp(A.target[i], B.target[i], k);
+  cam.dist  = lerp(A.dist,  B.dist,  k);
+  cam.yaw   = A.yaw + shortestAngle(B.yaw - A.yaw) * k;      // 沿最短弧插值
+  cam.pitch = lerp(A.pitch, B.pitch, k);
+  if (camAnim.t >= 1) camAnim.on = false;
+  autoTour = false;
+}
+
 function cameraEye() {
   const cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch);
   return [
@@ -1910,64 +2067,249 @@ function cameraEye() {
 }
 
 /* =========================================================
-   8. 输入
+   8. 输入：鼠标 / 键盘 / 触摸
+   ---------------------------------------------------------
+   触摸设备统一走 Pointer Events（iOS 13+ / 各主流浏览器均支持）：
+     单指拖拽  -> 旋转（与鼠标左键一致）
+     双指捏合  -> 缩放（跟手）
+     双指拖动  -> 沿地面平移（按像素 1:1 换算，不随缩放比例突变）
+     双击画面  -> 平滑重置视角
+   桌面端的右键 / Shift 拖拽平移保持原样，互不影响。
    ========================================================= */
 const keys = Object.create(null);
-let drag = null;
+
+/* ---------- 触摸设备识别 ----------
+   三层判断，按可靠性排序：
+     1. (pointer:coarse) 媒体查询 —— 手机/平板的主指针就是粗指针；
+     2. navigator.maxTouchPoints > 0 —— 触摸屏笔记本、二合一设备在部分
+        浏览器里主指针仍报 fine，但这里会给出 >0；
+     3. 任何一次真实触摸事件 —— 兜底，第一次触摸就立刻切到触摸 UI。
+   只用第 1 条不够：部分环境（含无头浏览器、部分平板的桌面模式）
+   即使屏幕很小也可能报 pointer:fine。
+   URL 参数 ?touch=1 / ?touch=0 可以强制覆盖自动判断。 */
+const mqCoarse = window.matchMedia ? window.matchMedia('(pointer: coarse)') : null;
+function hasTouchInput() {
+  const forced = QS.get('touch');
+  if (forced === '1') return true;
+  if (forced === '0') return false;
+  return (navigator.maxTouchPoints || 0) > 0 || 'ontouchstart' in window ||
+         (mqCoarse ? mqCoarse.matches : false);
+}
+let touchUI = false;
+function useTouchUI() {
+  if (touchUI) return;
+  touchUI = true;
+  document.body.classList.add('touch');
+}
+
+/* ---------- Pointer 手势状态 ---------- */
+const activePointers = new Map();       // pointerId -> {x, y, type}
+let idlePointer = null;                 // 第一根按下、且没被双指手势取消的指针
+let camMode = 'idle';                   // idle | rotate | pan | pinch
+let panLast = null;                     // 平移的上一帧像素位置
+let pinchLast = null;                   // {dist, midX, midY}
+let zoomTarget = 0;                     // 距离的平滑目标（滚轮与捏合共用，避免互相打架）
+let zoomSmooth = false;                 // 是否每帧向 zoomTarget 缓动
+let tapTrack = null;                    // 双击检测
+const TAP_MS = 320, TAP_SLOP = 22, DBL_SLOP = 46;
+const ZOOM_MIN = 40, ZOOM_MAX = 1500;
+
+/* 沿相机的右/前方向（投影到地面）平移焦点。k 是像素->世界米的系数。 */
+function panByPixels(dx, dy, k) {
+  const eye = cameraEye();
+  const fwd = normalize3([cam.target[0] - eye[0], 0, cam.target[2] - eye[2]]);
+  const right = normalize3(cross3(fwd, [0, 1, 0]));
+  for (let i = 0; i < 3; i++) cam.target[i] += (-right[i] * dx + fwd[i] * dy) * k;
+  cam.target[1] = clamp(cam.target[1], 0, 160);
+  camAnim.on = false;
+}
+
+function resetGestureState() {
+  camMode = 'idle';
+  idlePointer = null;
+  panLast = null;
+  pinchLast = null;
+}
+
+function beginPinch() {
+  const ps = [...activePointers.values()];
+  if (ps.length < 2 || camMode === 'pinch') return;
+  camMode = 'pinch';
+  idlePointer = null;
+  const dist = Math.max(1, Math.hypot(ps[0].x - ps[1].x, ps[0].y - ps[1].y));
+  zoomTarget = cam.dist;                // 以当前距离为基准，后续按手指比例累计
+  zoomSmooth = true;
+  pinchLast = { dist, midX: (ps[0].x + ps[1].x) / 2, midY: (ps[0].y + ps[1].y) / 2 };
+  canvas.classList.remove('dragging');
+  camAnim.on = false;                  // 双指接管，停掉可能还在跑的视角补间
+}
+
+/* 每帧向目标距离缓动。放在帧循环里而不是 pointermove 里，
+   手指按住不动时缩放也能平滑收尾，不会停在半路。 */
+function easeZoom() {
+  if (!zoomSmooth) return;
+  cam.dist += (zoomTarget - cam.dist) * 0.5;
+  if (Math.abs(zoomTarget - cam.dist) < 0.5) { cam.dist = zoomTarget; zoomSmooth = false; }
+  camAnim.on = false;
+}
 
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 
 canvas.addEventListener('pointerdown', e => {
-  canvas.setPointerCapture(e.pointerId);
-  drag = { x: e.clientX, y: e.clientY, pan: e.button === 2 || e.shiftKey };
+  if (e.pointerType === 'touch') useTouchUI();
+  try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* 指针已失效，可忽略 */ }
+
+  activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
+
+  // 双击重置：（几乎）没动过的两次落点，时间与距离都在阈值内。
+  // Shift / 右键是平移的修饰键，不能参与双击判定，否则会抢掉平移手势。
+  const isTouchLike = e.pointerType !== 'mouse' || (e.button === 0 && !e.shiftKey && !e.altKey);
+  if (isTouchLike) {
+    const now = performance.now();
+    if (tapTrack && (now - tapTrack.t) <= TAP_MS &&
+        Math.hypot(e.clientX - tapTrack.x, e.clientY - tapTrack.y) <= DBL_SLOP) {
+      tapTrack = null;
+      resetGestureState();
+      resetCamera(true);
+      return;
+    }
+    tapTrack = { t: now, x: e.clientX, y: e.clientY };
+  }
+
+  if (activePointers.size >= 2) { beginPinch(); return; }
+
+  if (e.pointerType === 'touch') {
+    camMode = 'rotate';                 // 触摸端没有右键，单指一律旋转
+  } else {
+    camMode = (e.button === 2 || e.shiftKey) ? 'pan' : 'rotate';
+  }
+  idlePointer = e.pointerId;
+  panLast = { x: e.clientX, y: e.clientY };
   canvas.classList.add('dragging');
 });
 
 canvas.addEventListener('pointermove', e => {
-  if (!drag) return;
-  const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
-  drag.x = e.clientX; drag.y = e.clientY;
+  const p = activePointers.get(e.pointerId);
+  if (!p) return;
+  p.x = e.clientX; p.y = e.clientY;
 
-  if (drag.pan) {
-    // 沿相机的右方向 / 前方向（投影到地面）平移焦点
-    const eye = cameraEye();
-    const fwd = normalize3([cam.target[0] - eye[0], 0, cam.target[2] - eye[2]]);
-    const right = normalize3(cross3(fwd, [0, 1, 0]));
-    const k = cam.dist * 0.0016;
-    for (let i = 0; i < 3; i++) cam.target[i] += (-right[i] * dx + fwd[i] * dy) * k;
-    cam.target[1] = clamp(cam.target[1], 0, 160);
-  } else {
+  if (camMode === 'pinch' && activePointers.size >= 2) {
+    const ps = [...activePointers.values()];
+    const dist = Math.max(1, Math.hypot(ps[0].x - ps[1].x, ps[0].y - ps[1].y));
+    const midX = (ps[0].x + ps[1].x) / 2, midY = (ps[0].y + ps[1].y) / 2;
+
+    // 缩放：指距比例累计到目标距离（缓动在 easeZoom 里逐帧做）
+    if (pinchLast) {
+      zoomTarget = clamp(zoomTarget * (pinchLast.dist / dist), ZOOM_MIN, ZOOM_MAX);
+      panByPixels(midX - pinchLast.midX, midY - pinchLast.midY, 1);   // 双指拖动 -> 平移
+    }
+    pinchLast = { dist, midX, midY };
+    return;
+  }
+
+  if (e.pointerId !== idlePointer) return;
+  const dx = e.clientX - panLast.x, dy = e.clientY - panLast.y;
+  panLast = { x: e.clientX, y: e.clientY };
+
+  if (camMode === 'pan') {
+    panByPixels(dx, dy, cam.dist * 0.0016);
+  } else if (camMode === 'rotate') {
     cam.yaw   -= dx * 0.005;
     cam.pitch = clamp(cam.pitch + dy * 0.004, 0.02, 1.50);
+    camAnim.on = false;
   }
 });
 
-const endDrag = () => { drag = null; canvas.classList.remove('dragging'); };
-canvas.addEventListener('pointerup', endDrag);
-canvas.addEventListener('pointercancel', endDrag);
+function endPointer(e, cancelled) {
+  activePointers.delete(e.pointerId);
+  if (cancelled) tapTrack = null;      // 被系统取消的指针不参与双击判定
+
+  if (e.pointerId === idlePointer) {
+    idlePointer = null;
+    if (camMode === 'rotate' || camMode === 'pan') {
+      camMode = 'idle';
+      canvas.classList.remove('dragging');
+    }
+  }
+  if (activePointers.size === 0) {
+    resetGestureState();
+    canvas.classList.remove('dragging');
+  } else if (camMode === 'pinch' && activePointers.size < 2) {
+    // 从双指变单指：不跳变，等手指抬完再重新开始
+    camMode = 'idle';
+    idlePointer = null;
+    pinchLast = null;
+    canvas.classList.remove('dragging');
+  }
+}
+canvas.addEventListener('pointerup', e => endPointer(e, false));
+canvas.addEventListener('pointercancel', e => endPointer(e, true));
+// 兜底：指针被系统抢走（来电、切后台）时别把状态卡在拖动里
+window.addEventListener('blur', resetGestureState);
 
 canvas.addEventListener('wheel', e => {
   e.preventDefault();
-  cam.dist = clamp(cam.dist * Math.exp(e.deltaY * 0.0011), 40, 1500);
+  const base = zoomSmooth ? zoomTarget : cam.dist;      // 连续滚轮刻度要累积，不能互相覆盖
+  zoomTarget = clamp(base * Math.exp(e.deltaY * 0.0011), ZOOM_MIN, ZOOM_MAX);
+  zoomSmooth = true;
+  camAnim.on = false;
 }, { passive: false });
 
 window.addEventListener('keydown', e => {
   const k = e.key.toLowerCase();
   keys[k] = true;
 
-  if (k === ' ') { autoTour = !autoTour; e.preventDefault(); }
+  if (k === ' ') { autoTour = !autoTour; camAnim.on = false; e.preventDefault(); }
   if (k === 't') timePaused = !timePaused;
   if (k === 'n') timeOfDay = (timeOfDay > 0.25 && timeOfDay < 0.75) ? 0.02 : 0.42;
-  if (k === 'r') {
-    cam.target = CAM_DEFAULT.target.slice();
-    cam.dist = CAM_DEFAULT.dist; cam.yaw = CAM_DEFAULT.yaw; cam.pitch = CAM_DEFAULT.pitch;
-    autoTour = false;
-  }
+  if (k === 'r') resetCamera(false);
   if (['w', 'a', 's', 'd', ' '].includes(k)) e.preventDefault();
 });
 window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
 window.addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
 
+/* ---------- 触摸操作按钮 ---------- */
+function syncTouchButtons() {
+  const bar = document.getElementById('touchbar');
+  if (!bar) return;
+  const set = (act, on, glyph) => {
+    const b = bar.querySelector('[data-act="' + act + '"]');
+    if (!b) return;
+    if (on) b.setAttribute('data-on', '1'); else b.removeAttribute('data-on');
+    if (glyph) b.textContent = glyph;
+  };
+  // 按钮图标反映"当前状态"：巡航中是暂停符，时间暂停时是播放符
+  set('tour', autoTour, autoTour ? '❚❚' : '▶');
+  set('time', timePaused, timePaused ? '▶' : '⏱');
+  set('daynight', false, (timeOfDay > 0.25 && timeOfDay < 0.75) ? '☾' : '☀');
+}
+
+const bar = document.getElementById('touchbar');
+if (bar) {
+  bar.addEventListener('click', e => {
+    const b = e.target.closest('[data-act]');
+    if (!b) return;
+    switch (b.dataset.act) {
+      case 'zoomin':   zoomStep(1 / 1.45); break;
+      case 'zoomout':  zoomStep(1.45);     break;
+      case 'tour':     autoTour = !autoTour; camAnim.on = false; break;
+      case 'time':     timePaused = !timePaused; break;
+      case 'daynight': timeOfDay = (timeOfDay > 0.25 && timeOfDay < 0.75) ? 0.02 : 0.42; break;
+      case 'reset':    resetCamera(true);  break;
+    }
+    syncTouchButtons();
+  });
+}
+if (hasTouchInput()) {
+  useTouchUI();
+  // 竖屏手机上的默认 860m 会把城市压成一条，稍微推近一点更适合小屏。
+  // urlDist === null 表示 URL 没给出有效距离，此时才套用手机默认值。
+  if (CAM_DEFAULT.dist === 860 && urlDist === null &&
+      window.innerWidth <= 560 && window.innerHeight > window.innerWidth) {
+    CAM_DEFAULT.dist = 620;
+    cam.dist = 620;
+  }
+}
 function applyKeyboardPan(dt) {
   let mx = 0, mz = 0;
   if (keys['w'] || keys['arrowup'])    mz += 1;
@@ -2166,6 +2508,8 @@ function frame(now) {
     cam.dist  = 860 + Math.sin(now * 0.00007) * 210;
   }
   applyKeyboardPan(dt);
+  easeZoom();                            // 缩放缓动：滚轮与双指捏合共用
+  updateCameraTween(dt);
 
   resize();
   const L = computeLighting(timeOfDay);
@@ -2214,6 +2558,7 @@ function frame(now) {
   elClock.textContent = String(Math.floor(mins / 60)).padStart(2, '0') + ':' +
                         String(mins % 60).padStart(2, '0');
   elPhase.textContent = phaseName(timeOfDay) + (timePaused ? ' · 已暂停' : '');
+  syncTouchButtons();                    // 触摸按钮的按下态跟随实际状态
 
   requestAnimationFrame(frame);
 }
