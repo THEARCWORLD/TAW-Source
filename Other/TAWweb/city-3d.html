@@ -1,0 +1,2227 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>霓虹都市 · 3D City</title>
+<style>
+  :root{
+    --panel:rgba(10,14,26,.62);
+    --line:rgba(130,180,255,.16);
+    --txt:#dce7ff;
+    --dim:#8494b8;
+    --accent:#5fd0ff;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%;overflow:hidden;background:#05070f}
+  body{
+    color:var(--txt);
+    font-family:"Segoe UI",system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+    -webkit-user-select:none;user-select:none;
+    -webkit-tap-highlight-color:transparent;
+  }
+  #gl{display:block;width:100vw;height:100vh;cursor:grab}
+  #gl.dragging{cursor:grabbing}
+
+  .panel{
+    position:fixed;
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:14px;
+    backdrop-filter:blur(12px);
+    box-shadow:0 10px 34px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.06);
+    padding:13px 16px;
+    pointer-events:none;
+  }
+  #info{top:16px;left:16px;min-width:196px}
+  #info h1{
+    font-size:15px;letter-spacing:.05em;margin-bottom:9px;
+    background:linear-gradient(92deg,#5fd0ff,#a78bfa 55%,#ff6fb5);
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+    filter:drop-shadow(0 0 14px rgba(120,150,255,.5));
+  }
+  .row{display:flex;justify-content:space-between;gap:16px;font-size:12px;line-height:1.9}
+  .row .k{color:var(--dim)}
+  .row .v{font-variant-numeric:tabular-nums;font-weight:600}
+  #clock{
+    margin-top:9px;padding-top:9px;border-top:1px solid var(--line);
+    font-size:22px;font-weight:800;font-variant-numeric:tabular-nums;
+    letter-spacing:.03em;text-shadow:0 0 16px rgba(95,208,255,.45);
+  }
+  #phase{font-size:11px;color:var(--dim);letter-spacing:.16em;text-transform:uppercase}
+
+  #help{bottom:16px;left:16px;font-size:12px;line-height:2;color:var(--dim)}
+  #help b{color:var(--txt);font-weight:600}
+  kbd{
+    display:inline-block;min-width:17px;text-align:center;
+    background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.16);
+    border-bottom-width:2px;border-radius:5px;padding:0 5px;
+    font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;color:#e8f0ff;
+  }
+  #err{
+    position:fixed;inset:0;display:none;place-items:center;text-align:center;
+    background:#05070f;padding:32px;font-size:15px;line-height:2;color:#ff9db4;
+  }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+
+<div class="panel" id="info">
+  <h1>霓虹都市 · 3D City</h1>
+  <div class="row"><span class="k">帧率</span><span class="v" id="fps">–</span></div>
+  <div class="row"><span class="k">楼宇</span><span class="v" id="count">–</span></div>
+  <div class="row"><span class="k">↳ 高层/中层/低层/别墅</span><span class="v" id="kinds">–</span></div>
+  <div class="row"><span class="k">树木</span><span class="v" id="trees">–</span></div>
+  <div class="row"><span class="k">桥梁</span><span class="v" id="bridges">–</span></div>
+  <div class="row"><span class="k">车辆</span><span class="v" id="cars">–</span></div>
+  <div class="row"><span class="k">三角形</span><span class="v" id="tris">–</span></div>
+  <div class="row"><span class="k">立交</span><span class="v" id="ics">–</span></div>
+  <div id="clock">18:00</div>
+  <div id="phase">黄昏</div>
+</div>
+
+<div class="panel" id="help">
+  <b>拖拽</b> 旋转 &nbsp;·&nbsp; <b>滚轮</b> 缩放 &nbsp;·&nbsp; <b>右键/Shift 拖拽</b> 平移<br>
+  <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 平移 ·
+  <kbd>空格</kbd> 自动巡航 ·
+  <kbd>T</kbd> 暂停时间 ·
+  <kbd>N</kbd> 昼夜切换 ·
+  <kbd>R</kbd> 重置视角<br>
+  <span style="opacity:.62">30×30 街区 · 河道蜿蜒穿过市区 · 拱桥 · 右侧通行车流<br>
+  四座地标：电视塔 / 金字塔 / 穹顶大殿 / 玻璃尖塔<br>
+  环路以内是主城区，以外是依山而建的坡屋顶别墅区 · 高架快速路与两座立交</span>
+</div>
+
+<div id="err"></div>
+
+<!-- ==================== 着色器 ==================== -->
+<script id="vs-scene" type="x-shader/x-vertex">
+#version 100
+attribute vec3 aPos;
+attribute vec3 aNrm;
+attribute vec2 aUV;
+attribute vec3 aCol;
+attribute float aMat;      // 0外墙 1屋顶 2地面 3水面 4车身 5自发光 6植被 7实体
+
+uniform mat4 uProj;
+uniform mat4 uView;
+
+varying vec3 vPos;
+varying vec3 vNrm;
+varying vec2 vUV;
+varying vec3 vCol;
+varying float vMat;
+
+void main() {
+  vPos = aPos;
+  vNrm = aNrm;
+  vUV  = aUV;
+  vCol = aCol;
+  vMat = aMat;
+  gl_Position = uProj * uView * vec4(aPos, 1.0);
+}
+</script>
+
+<script id="fs-scene" type="x-shader/x-fragment">
+#version 100
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
+precision mediump float;
+#endif
+
+varying vec3 vPos;
+varying vec3 vNrm;
+varying vec2 vUV;
+varying vec3 vCol;
+varying float vMat;
+
+uniform vec3  uSunDir;        // 指向太阳（方向全天连续变化）
+uniform vec3  uSunColor;
+uniform vec3  uMoonDir;       // 月光：固定的补光，只在夜里出现
+uniform vec3  uMoonColor;
+uniform vec3  uAmbient;
+uniform vec3  uWallColor;
+uniform vec3  uGlassColor;
+uniform vec3  uWindowColor;
+uniform vec3  uFogColor;
+uniform vec3  uCamPos;
+uniform vec3  uWaterDeep;
+uniform vec3  uMisc;          // x=雾浓度 y=夜晚系数 z=时间
+uniform vec4  uRiver;         // x=主振幅 y=主频率 z=水面半宽 w=偏移
+uniform vec4  uRiver2;        // x=次振幅 y=次频率 z=河岸宽 w=水面高度
+uniform vec4  uCity;          // x=环路半径 y=环路半宽 z=郊区草地强度 w=绿化带宽度
+
+float hash(vec2 p) {
+  p = fract(p * vec2(123.34, 456.21));
+  p += dot(p, p + 45.32);
+  return fract(p.x * p.y);
+}
+
+/* 与 JS 的 riverCenterX() 必须逐字一致 */
+float riverX(float z) {
+  return uRiver.w + sin(z * uRiver.y) * uRiver.x
+                  + sin(z * uRiver2.y) * uRiver2.x;
+}
+
+void main() {
+  vec3 base;
+  vec3 emissive = vec3(0.0);
+  bool selfLit = false;              // 水面自带光照，不再乘漫反射
+
+  if (vMat > 6.5) {
+    /* ---------- 实体：地标石材 / 桥体 ---------- */
+    base = vCol * (0.90 + 0.20 * hash(floor(vUV * 0.6)));
+
+  } else if (vMat > 5.5) {
+    /* ---------- 植被 ---------- */
+    base = vCol * (0.80 + 0.40 * hash(floor(vUV * 1.5)));
+
+  } else if (vMat > 4.5) {
+    /* ---------- 自发光：车灯、塔顶航空灯、灯带 ---------- */
+    base = vCol * 0.10;
+    emissive = vCol * (0.45 + 1.55 * uMisc.y);
+
+  } else if (vMat > 3.5) {
+    /* ---------- 车身 ---------- */
+    base = vCol;
+    vec3 Vv = normalize(uCamPos - vPos);
+    vec3 Hv = normalize(uSunDir + Vv);
+    float sp = pow(max(dot(normalize(vNrm), Hv), 0.0), 48.0);
+    emissive = (uSunColor + uMoonColor) * sp * 0.9;
+
+  } else if (vMat > 2.5) {
+    /* ---------- 水面：波纹法线 + 菲涅尔 + 日月高光 ---------- */
+    vec2 p = vUV;                                  // 世界 xz
+    float t = uMisc.z;
+    vec2 d = vec2(0.0);
+    d += vec2(cos(p.x * 0.31 + t * 1.15), cos(p.y * 0.27 - t * 0.95)) * 0.55;
+    d += vec2(cos(p.x * 0.11 - t * 0.63), cos(p.y * 0.13 + t * 0.81)) * 0.85;
+    d += vec2(cos(p.x * 0.63 + t * 1.70), cos(p.y * 0.59 + t * 1.40)) * 0.22;
+    vec3 N = normalize(vec3(d.x * 0.075, 1.0, d.y * 0.075));
+    vec3 Vv = normalize(uCamPos - vPos);
+
+    float fres = pow(1.0 - clamp(dot(N, Vv), 0.0, 1.0), 4.0);
+    base = mix(uWaterDeep, uFogColor, fres * 0.80 + 0.10);
+
+    vec3 Hv = normalize(uSunDir + Vv);
+    float spec = pow(max(dot(N, Hv), 0.0), 130.0);
+    base += uSunColor * spec * 3.0 + uMoonColor * spec * 1.6;
+    // 夜里水面碎成一片城市灯火的反光
+    base += uWindowColor * uMisc.y * 0.11
+          * (0.35 + 0.65 * sin(p.x * 0.5 + p.y * 0.72 + t * 0.8));
+    selfLit = true;
+
+  } else if (vMat > 1.5) {
+    /* ---------- 地面：沥青街区 + 道路 + 河岸 ---------- */
+    vec2 g = vUV;                                  // 世界 xz（米）
+    vec2 b = fract(g / 40.0);                      // 每 40m 一个街区
+    float vRoad = max(step(b.x, 0.22), step(0.78, b.x));
+    float hRoad = max(step(b.y, 0.22), step(0.78, b.y));
+    float road  = max(vRoad, hRoad);
+
+    vec3 asphalt = vec3(0.075, 0.080, 0.095);
+    vec3 block   = vec3(0.115, 0.120, 0.135);
+    base = mix(block, asphalt, road);
+
+    // 路面中央虚线
+    float cV = max(1.0 - step(0.020, abs(b.x - 0.11)),
+                   1.0 - step(0.020, abs(b.x - 0.89)));
+    float cH = max(1.0 - step(0.020, abs(b.y - 0.11)),
+                   1.0 - step(0.020, abs(b.y - 0.89)));
+    float dash = step(0.42, fract(g.y * 0.16)) * cV
+               + step(0.42, fract(g.x * 0.16)) * cH;
+    base = mix(base, vec3(0.40, 0.38, 0.26), clamp(dash, 0.0, 1.0) * 0.8);
+
+    // 微小的沥青颗粒感，避免大面积死板
+    base *= 0.92 + 0.16 * hash(floor(g * 0.7));
+
+    // 郊区：草地为主，和主城区的沥青形成明确分界
+    float rr = length(g);
+    float lawn = smoothstep(uCity.x - 6.0, uCity.x + 34.0, rr);
+    base = mix(base, vec3(0.105, 0.145, 0.085) * (0.80 + 0.45 * hash(floor(g * 0.35))),
+               lawn * uCity.z);
+
+    // 环路：主城区与郊区的分界大道
+    float ring = 1.0 - smoothstep(uCity.y - 1.2, uCity.y, abs(rr - uCity.x));
+    base = mix(base, vec3(0.105, 0.108, 0.120), ring);
+    float ringLine = ring * step(0.55, fract(g.x * 0.12 + g.y * 0.12));
+    base = mix(base, vec3(0.44, 0.42, 0.30), ringLine * 0.5);
+
+    // 河岸：石砌护堤，压掉下方的路面纹理
+    float rd = abs(g.x - riverX(g.y));
+    float bank = 1.0 - smoothstep(uRiver.z, uRiver.z + uRiver2.z, rd);
+    base = mix(base, vec3(0.185, 0.175, 0.155) * (0.85 + 0.30 * hash(floor(g * 0.9))),
+               bank * 0.92);
+
+  } else if (vMat > 0.5) {
+    /* ---------- 屋顶 ---------- */
+    base = uWallColor * 0.62 * vCol * (0.80 + 0.45 * hash(floor(vUV * 0.35)));
+
+  } else {
+    /* ---------- 外墙 + 窗户 ---------- */
+    vec2 cell = vUV / vec2(3.4, 3.9);              // 3.4m 窗柱间距 / 3.9m 层高
+    vec2 g2   = fract(cell);
+    vec2 id   = floor(cell);
+
+    float win = step(0.13, g2.x) * step(g2.x, 0.83)
+              * step(0.20, g2.y) * step(g2.y, 0.78);
+
+    // 每扇窗独立决定是否亮灯，并随机偏暖或偏冷
+    float on    = step(0.42, hash(id + 11.0));
+    float warm  = step(0.72, hash(id + 3.70));
+    float power = 0.40 + 0.85 * hash(id + 19.0);
+    vec3  tint  = mix(vec3(1.00, 0.84, 0.58), vec3(0.70, 0.88, 1.00), warm);
+
+    emissive = tint * win * on * uMisc.y * power;
+
+    // 白天窗户反射天光
+    float glass = win * (1.0 - uMisc.y);
+    base = mix(uWallColor * vCol * (0.82 + 0.36 * hash(id * 0.13 + 5.0)), uGlassColor, glass * 0.85);
+
+    // 越靠近地面越暗，模拟街谷环境光遮蔽
+    base *= mix(0.52, 1.0, clamp(vUV.y / 16.0, 0.0, 1.0));
+  }
+
+  vec3  N    = normalize(vNrm);
+  float ndlS = max(dot(N, uSunDir), 0.0);
+  float ndlM = max(dot(N, uMoonDir), 0.0);
+  float up   = clamp(N.y * 0.5 + 0.5, 0.0, 1.0);    // 天光从上方来
+
+  vec3 shade = selfLit ? vec3(1.0)
+                       : (uAmbient * up + uSunColor * ndlS + uMoonColor * ndlM);
+  vec3 col = base * shade + emissive;
+
+  float d = length(vPos - uCamPos);
+  float f = 1.0 - exp(-uMisc.x * d);
+  col = mix(col, uFogColor, clamp(f, 0.0, 1.0));
+
+  gl_FragColor = vec4(col, 1.0);
+}
+</script>
+
+<script id="vs-sky" type="x-shader/x-vertex">
+#version 100
+attribute vec2 aNdc;
+uniform vec3  uCamRight;
+uniform vec3  uCamUp;
+uniform vec3  uCamFwd;
+uniform float uTanHalf;
+uniform float uAspect;
+varying vec3 vRay;
+void main() {
+  vRay = uCamFwd
+       + uCamRight * (aNdc.x * uTanHalf * uAspect)
+       + uCamUp    * (aNdc.y * uTanHalf);
+  gl_Position = vec4(aNdc, 0.0, 1.0);
+}
+</script>
+
+<script id="fs-sky" type="x-shader/x-fragment">
+#version 100
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
+precision mediump float;
+#endif
+varying vec3 vRay;
+
+uniform vec3  uZenith;
+uniform vec3  uHorizon;
+uniform vec3  uSunGlowDir;
+uniform vec3  uSunGlowColor;
+uniform float uNight;
+
+float hash31(vec3 p) {
+  p = fract(p * 0.3183099 + vec3(0.71, 0.113, 0.419));
+  p *= 17.0;
+  return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
+
+void main() {
+  vec3 r = normalize(vRay);
+
+  float t = clamp(r.y * 0.5 + 0.5, 0.0, 1.0);
+  vec3 col = mix(uHorizon, uZenith, pow(t, 0.8));
+
+  // 太阳 / 月亮的光盘与光晕
+  float s = max(dot(r, uSunGlowDir), 0.0);
+  col += uSunGlowColor * (pow(s, 420.0) * 3.2 + pow(s, 7.0) * 0.14);
+
+  // 星空（仅夜晚可见）
+  vec3 cell = floor(r * 260.0);
+  float h = hash31(cell);
+  float star = step(0.9972, h) * uNight * smoothstep(0.02, 0.35, r.y);
+  col += vec3(0.95, 0.96, 1.0) * star * (0.35 + 0.65 * hash31(cell + 5.0));
+
+  // 地平线以下压暗，避免天空盒底部发亮
+  col *= mix(0.45, 1.0, clamp(r.y * 3.0 + 0.75, 0.0, 1.0));
+
+  gl_FragColor = vec4(col, 1.0);
+}
+</script>
+
+<script id="vs-shadow" type="x-shader/x-vertex">
+#version 100
+attribute vec3 aPos;
+uniform mat4  uProj;
+uniform mat4  uView;
+uniform vec3  uCamPos;
+uniform float uFogDensity;
+varying float vFog;
+void main() {
+  vFog = 1.0 - exp(-uFogDensity * length(aPos - uCamPos));
+  gl_Position = uProj * uView * vec4(aPos, 1.0);
+}
+</script>
+
+<script id="fs-shadow" type="x-shader/x-fragment">
+#version 100
+precision mediump float;
+varying float vFog;
+uniform float uStrength;
+void main() {
+  // 越远阴影越淡（融进雾里）。配合 blendFunc(DST_COLOR, ZERO) 做正片叠底。
+  float k = mix(1.0 - uStrength, 1.0, clamp(vFog, 0.0, 1.0));
+  gl_FragColor = vec4(vec3(k), 1.0);
+}
+</script>
+
+<!-- ==================== 主程序 ==================== -->
+<script>
+(() => {
+'use strict';
+
+const canvas = document.getElementById('gl');
+const errBox = document.getElementById('err');
+
+function fatal(msg) {
+  errBox.style.display = 'grid';
+  errBox.innerHTML = msg;
+  throw new Error(msg.replace(/<[^>]+>/g, ''));
+}
+
+const gl = canvas.getContext('webgl', {
+  antialias: true, alpha: false, depth: true, stencil: false,
+  powerPreference: 'high-performance',
+}) || canvas.getContext('experimental-webgl');
+
+if (!gl) fatal('你的浏览器/设备不支持 WebGL，无法渲染 3D 城市。<br>请换用较新的 Chrome、Edge、Firefox 或 Safari。');
+
+/* =========================================================
+   1. 数学：4x4 矩阵（列主序，与 WebGL 一致）
+   ========================================================= */
+const mat4 = {
+  create: () => new Float32Array(16),
+
+  perspective(out, fovy, aspect, near, far) {
+    const f = 1 / Math.tan(fovy / 2);
+    const nf = 1 / (near - far);
+    out[0] = f / aspect; out[1] = 0; out[2] = 0;                  out[3] = 0;
+    out[4] = 0;          out[5] = f; out[6] = 0;                  out[7] = 0;
+    out[8] = 0;          out[9] = 0; out[10] = (far + near) * nf; out[11] = -1;
+    out[12] = 0;         out[13] = 0; out[14] = 2 * far * near * nf; out[15] = 0;
+    return out;
+  },
+
+  lookAt(out, eye, center, up) {
+    let z0 = eye[0] - center[0], z1 = eye[1] - center[1], z2 = eye[2] - center[2];
+    let len = Math.hypot(z0, z1, z2) || 1;
+    z0 /= len; z1 /= len; z2 /= len;
+
+    let x0 = up[1] * z2 - up[2] * z1;
+    let x1 = up[2] * z0 - up[0] * z2;
+    let x2 = up[0] * z1 - up[1] * z0;
+    len = Math.hypot(x0, x1, x2);
+    if (len < 1e-6) { x0 = 1; x1 = 0; x2 = 0; } else { x0 /= len; x1 /= len; x2 /= len; }
+
+    const y0 = z1 * x2 - z2 * x1;
+    const y1 = z2 * x0 - z0 * x2;
+    const y2 = z0 * x1 - z1 * x0;
+
+    out[0] = x0; out[1] = y0; out[2] = z0; out[3] = 0;
+    out[4] = x1; out[5] = y1; out[6] = z1; out[7] = 0;
+    out[8] = x2; out[9] = y2; out[10] = z2; out[11] = 0;
+    out[12] = -(x0 * eye[0] + x1 * eye[1] + x2 * eye[2]);
+    out[13] = -(y0 * eye[0] + y1 * eye[1] + y2 * eye[2]);
+    out[14] = -(z0 * eye[0] + z1 * eye[1] + z2 * eye[2]);
+    out[15] = 1;
+    return out;
+  },
+};
+
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const lerp  = (a, b, t) => a + (b - a) * t;
+function smoothstep(e0, e1, x) {
+  const t = clamp((x - e0) / (e1 - e0), 0, 1);
+  return t * t * (3 - 2 * t);
+}
+/* 三色渐变：先按昼夜插值，再把晨昏色叠上去 */
+function mix3(night, dusk, day, dayAmt, duskAmt) {
+  const out = [0, 0, 0];
+  for (let i = 0; i < 3; i++) {
+    out[i] = lerp(lerp(night[i], day[i], dayAmt), dusk[i], duskAmt * 0.85);
+  }
+  return out;
+}
+function normalize3(v) {
+  const l = Math.hypot(v[0], v[1], v[2]) || 1;
+  return [v[0] / l, v[1] / l, v[2] / l];
+}
+function cross3(a, b) {
+  return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+}
+
+/* 确定性随机，保证每次打开城市完全一致 */
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+/* =========================================================
+   2. 生成城市
+   ========================================================= */
+const BLOCK = 40;        // 街区尺寸（米），与地面着色器中的 40.0 必须一致
+const ROAD  = 0.22;      // 道路占街区的比例
+const LOT   = BLOCK * (1 - ROAD * 2);   // 可建面积 ≈ 22.4m
+const GRID  = 15;        // 每边 2*GRID 个街区（30×30 = 900 块，城市直径约 1200m）
+
+const buildings = [];
+const parks = [];          // 空地，用来种树
+const gardens = [];        // 别墅院子，种景观树
+const shadowCasters = [];  // 投影阴影的包围盒（楼宇 + 地标）
+let cityStats = { total: 0, tallest: 0, trees: 0, bridges: 0, kinds: {} };
+
+/* 建筑体量类型 */
+const BLD = { TOWER: 'tower', MID: 'mid', LOW: 'low', VILLA: 'villa' };
+const BLD_KINDS = [BLD.TOWER, BLD.MID, BLD.LOW, BLD.VILLA];
+const VILLA_BELOW = 0.19;  // downtown 低于此值的街区才划为郊区（只在最外圈）
+
+/* ---------- 河流 ----------
+   河道中心线是 z 的函数：x = offset + A·sin(z·f) + B·sin(z·f2)
+   着色器里用同一组 uniform 复算这条曲线，从而让地面画出河岸、水面网格贴合河道。
+   参数只在 RIVER 里定义一次，JS 与 GLSL 共用，不允许任何一边写死常数。 */
+const RIVER = {
+  offset: 15,
+  amp: 52,  freq: 0.0125,     // 主谐波：约 500m 一个弯
+  amp2: 14, freq2: 0.0312,    // 次谐波：让曲线不那么规整
+  halfW: 25,                  // 水面半宽
+  bank: 7,                    // 石砌河岸宽度
+  level: 0.18,                // 水面高度（略高于地面，避免 z-fighting）
+};
+function riverCenterX(z) {
+  return RIVER.offset + Math.sin(z * RIVER.freq) * RIVER.amp
+                      + Math.sin(z * RIVER.freq2) * RIVER.amp2;
+}
+/* 街区是否被河道（含河岸）碰到 —— 用采样代替解析解，够用且简单 */
+function blockTouchesRiver(cx, cz) {
+  const half = BLOCK / 2;
+  let lo = Infinity, hi = -Infinity;
+  for (let k = 0; k <= 8; k++) {
+    const rx = riverCenterX(cz - half + (k / 8) * BLOCK);
+    lo = Math.min(lo, rx); hi = Math.max(hi, rx);
+  }
+  const m = RIVER.halfW + RIVER.bank + 4;
+  return (cx + half) > (lo - m) && (cx - half) < (hi + m);
+}
+
+/* ---------- 地形 ----------
+   市中心与河谷保持平整，越往外越起伏。
+   关键设计：着色器完全不需要知道地形 —— 高度直接烘焙进地面网格的顶点里，
+   所以不存在 JS 与 GLSL 各写一份噪声、结果对不上的风险。 */
+const TERRAIN = {
+  flatR: 300,      // 这个半径内完全平整（主城区）
+  fullR: 1000,     // 到此半径达到最大起伏
+  amp: 54,
+  valley: 110,     // 河谷两侧的平缓带宽度
+};
+/* 郊区起始半径：由 VILLA_BELOW 反推，保证环路、绿化带与别墅区边界永远对齐。
+   生成时用 d = hypot(i+0.5, j+0.5)/GRID 判断 downtown，所以这里把那个 d 解出来。 */
+function suburbRadius() {
+  const target = 1 - VILLA_BELOW;              // 需要的 smoothstep 值
+  let lo = 0, hi = 1;
+  for (let k = 0; k < 50; k++) {               // 二分求 t²(3-2t) = target
+    const t = (lo + hi) / 2;
+    if (t * t * (3 - 2 * t) < target) lo = t; else hi = t;
+  }
+  return ((lo + hi) / 2) * GRID * BLOCK;
+}
+const SUBURB_R = suburbRadius();   // 约 427m，与别墅区边界一致
+const RING_HALF = 15;        // 环路半宽
+const GREEN_BELT = 30;       // 环路两侧的绿化带（不生成建筑）
+
+/* 值噪声：与坐标一一对应，保证城市可复现 */
+function hashNoise(x, y) {
+  const v = Math.sin(x * 127.1 + y * 311.7) * 43758.5453123;
+  return v - Math.floor(v);
+}
+function vnoise(x, y) {
+  const ix = Math.floor(x), iy = Math.floor(y);
+  const fx = x - ix, fy = y - iy;
+  const ux = fx * fx * (3 - 2 * fx), uy = fy * fy * (3 - 2 * fy);
+  const a = hashNoise(ix, iy),     b = hashNoise(ix + 1, iy);
+  const c = hashNoise(ix, iy + 1), d = hashNoise(ix + 1, iy + 1);
+  const top = a + (b - a) * ux, bot = c + (d - c) * ux;
+  return top + (bot - top) * uy;
+}
+
+/* 地形高度（米）。主城区与河谷恒为 0，向外平滑抬升。 */
+function terrainH(x, z) {
+  const r = Math.hypot(x, z);
+  const climb = smoothstep(TERRAIN.flatR, TERRAIN.fullR, r);
+  if (climb <= 0) return 0;
+  const rv = Math.abs(x - riverCenterX(z));
+  const valley = smoothstep(RIVER.halfW + RIVER.bank,
+                            RIVER.halfW + RIVER.bank + TERRAIN.valley, rv);
+  if (valley <= 0) return 0;
+  const n = vnoise(x * 0.0017, z * 0.0017) * 0.68
+          + vnoise(x * 0.0044 + 31.7, z * 0.0044 - 12.3) * 0.32;
+  return TERRAIN.amp * climb * valley * n;
+}
+
+/* 地形法线（中心差分） */
+function terrainNormal(x, z, e) {
+  e = e || 5;
+  const hL = terrainH(x - e, z), hR = terrainH(x + e, z);
+  const hD = terrainH(x, z - e), hU = terrainH(x, z + e);
+  return normalize3([hL - hR, 2 * e, hD - hU]);
+}
+
+/* 环路与河道都要求该处不生成建筑 */
+/* 街区（方块）是否与环路绿化带相交。
+   用「街区到原点的最近/最远距离」精确判断，而不是给半径加一个保守余量 ——
+   后者会把整圈多切掉上百个街区，白白浪费城市面积。 */
+function blockInGreenBelt(cx, cz) {
+  const h = BLOCK / 2;
+  const minR = Math.hypot(Math.max(0, Math.abs(cx) - h), Math.max(0, Math.abs(cz) - h));
+  const maxR = Math.hypot(Math.abs(cx) + h, Math.abs(cz) + h);
+  const inner = SUBURB_R - RING_HALF - GREEN_BELT;
+  const outer = SUBURB_R + RING_HALF + GREEN_BELT;
+  return maxR > inner && minR < outer;
+}
+
+/* ---------- 标志性建筑 ----------
+   每个占掉一整个街区（bi,bj），普通楼宇不再生成。
+   街区可建范围只有 LOT=22.4m 见方，所以所有地标的半径都必须 < LOT/2，
+   否则会压到马路上、甚至插进隔壁楼里（harness 里有对应断言）。
+   地标靠「形状 + 高度」取胜，而不是靠占地。 */
+const LANDMARKS = [
+  { type: 'tower',   bi: -4, bj:  3, name: '电视塔' },
+  { type: 'pyramid', bi:  3, bj:  4, name: '金字塔' },
+  { type: 'dome',    bi: -6, bj: -4, name: '穹顶大殿' },
+  { type: 'spire',   bi:  1, bj: -1, name: '玻璃尖塔' },
+].map(L => ({ ...L, x: L.bi * BLOCK + BLOCK / 2, z: L.bj * BLOCK + BLOCK / 2 }));
+const LANDMARK_MAX_R = LOT / 2;     // 11.2m
+
+function generateCity(seed) {
+  const rnd = mulberry32(seed);
+  buildings.length = 0;
+  parks.length = 0;
+  gardens.length = 0;
+
+  const reserved = new Set(LANDMARKS.map(L => L.bi + ',' + L.bj));
+  const SPLITS = [[1, 1], [2, 1], [1, 2], [2, 2], [2, 2], [2, 2], [3, 3]];
+
+  for (let i = -GRID; i < GRID; i++) {
+    for (let j = -GRID; j < GRID; j++) {
+      if (reserved.has(i + ',' + j)) continue;            // 留给地标
+
+      const bcx = i * BLOCK + BLOCK / 2;
+      const bcz = j * BLOCK + BLOCK / 2;
+
+      // 河道穿过这个街区 -> 整个街区让给河流
+      if (blockTouchesRiver(bcx, bcz)) continue;
+
+      // 环路绿化带 -> 留空，作为主城区与郊区的分界
+      if (blockInGreenBelt(bcx, bcz)) continue;
+
+      // 立交枢纽范围内 -> 留空给匝道
+      if (inInterchangeZone(bcx, bcz)) continue;
+
+      // 到市中心的归一化距离，决定这一带的天际线高度
+      const d = Math.hypot(i + 0.5, j + 0.5) / GRID;      // 0 中心 .. ~1.1 边缘
+      const downtown = 1 - smoothstep(0.10, 0.95, d);
+
+      // 少量空地当作公园 / 广场
+      if (rnd() < 0.08) { parks.push({ x: bcx, z: bcz }); continue; }
+
+      if (downtown < VILLA_BELOW) {
+        // 郊区里也留出一些低层公寓街区，避免清一色别墅
+        if (rnd() < 0.22) urbanBlock(rnd, bcx, bcz, downtown, true);
+        else              villaBlock(rnd, bcx, bcz);
+      } else {
+        urbanBlock(rnd, bcx, bcz, downtown, false);
+      }
+    }
+  }
+
+  cityStats.total = buildings.length;
+  cityStats.tallest = buildings.reduce((m, b) => Math.max(m, b.h), 0);
+  for (const k of BLD_KINDS) cityStats.kinds[k] = 0;
+  for (const b of buildings) cityStats.kinds[b.kind]++;
+}
+
+/* 城区街区：按到市中心的距离决定楼高，再据高度选体量类型。
+   高楼做退台 + 冠顶，中层做裙楼，低层做屋顶设备。 */
+function urbanBlock(rnd, bcx, bcz, downtown, suburban) {
+  // 郊区用更少更大的地块，保持低密度
+  const SPLITS = suburban
+    ? [[1, 1], [1, 1], [2, 1], [1, 2]]
+    : [[1, 1], [2, 1], [1, 2], [2, 2], [2, 2], [2, 2], [3, 3]];
+  const [nx, nz] = SPLITS[(rnd() * SPLITS.length) | 0];
+  const cw = LOT / nx, cd = LOT / nz;
+
+  for (let a = 0; a < nx; a++) {
+    for (let b = 0; b < nz; b++) {
+      if (nx * nz > 1 && rnd() < 0.12) continue;       // 同一街区内留点缝
+
+      const cx = bcx + (a + 0.5 - nx / 2) * cw;
+      const cz = bcz + (b + 0.5 - nz / 2) * cd;
+
+      const w = cw * lerp(0.62, 0.94, rnd());
+      const dp = cd * lerp(0.62, 0.94, rnd());
+
+      // 基准高度：市中心高、外围矮。指数取 1.3 让外围有一段平缓的
+      // 低层带，否则会从别墅(7m)直接跳到中层(30m+)，天际线出现断层。
+      let h = lerp(10, 104, Math.pow(downtown, 1.3)) * lerp(0.45, 1.5, rnd());
+      // 市中心偶尔冒出的摩天楼
+      if (downtown > 0.55 && rnd() < 0.06) h *= lerp(1.5, 2.4, rnd());
+      h = clamp(h, 10, 250);
+
+      // 郊区只允许低层，绝不出现高楼
+      if (suburban) h = Math.min(h, 19);
+      // 郊区只允许低层，绝不出现高楼
+      if (suburban) h = Math.min(h, 24);
+      const kind = h > 66 ? BLD.TOWER : h > 26 ? BLD.MID : BLD.LOW;
+      buildings.push({
+        x: cx, z: cz, w, d: dp, h, kind,
+        setback: kind === BLD.TOWER && rnd() < 0.72,   // 退台
+        crown:   kind === BLD.TOWER && rnd() < 0.45,   // 楼顶天线
+        oct:     rnd() < 0.32,                         // 八角塔楼
+        podium:  kind === BLD.MID   && rnd() < 0.55,   // 裙楼
+        ledge:   rnd() < 0.5,                          // 屋顶女儿墙
+        tint:    facadeTint(rnd),
+      });
+    }
+  }
+}
+
+/* 别墅区：低层坡屋顶住宅 + 院子。
+   一块地放 1~2 栋，尺寸和偏移都受可建范围约束（harness 里有断言）。 */
+function villaBlock(rnd, bcx, bcz) {
+  const two = rnd() < 0.34;
+  const n = two ? 2 : 1;
+
+  for (let k = 0; k < n; k++) {
+    // 联排各占左右半幅且不做横向抖动，保证互不重叠；
+    // 独栋宽度上限由「包络 = 0.70×w + 出檐」反推，确保连耳房也不越界。
+    const off = two ? (k === 0 ? -1 : 1) * LOT * 0.245 : 0;
+    const cx = bcx + off + (two ? 0 : (rnd() - 0.5) * 1.6);
+    const cz = bcz + (rnd() - 0.5) * LOT * 0.20;
+
+    const w = (two ? 6.0 : 9.0) + rnd() * (two ? 1.0 : 3.2);
+    const d = 7.0 + rnd() * 2.8;
+    const h = 5.0 + rnd() * 3.2;
+
+    buildings.push({
+      x: cx, z: cz, w, d, h, kind: BLD.VILLA,
+      tint: facadeTint(rnd),
+      ridgeZ: d > w,
+      chimney: rnd() < 0.7,
+      wing: rnd() < 0.55,          // 侧面小耳房
+      garden: rnd(),
+    });
+    gardens.push({ x: cx, z: cz, w, d });
+  }
+}
+
+/* =========================================================
+   3. 网格构建
+   顶点布局（12 个 float / 48 字节）：
+     aPos(3) aNrm(3) aUV(2) aCol(3) aMat(1)
+   外墙/屋顶的 aUV 用「米」做单位，这样全城窗户按同一套网格对齐。
+   aCol 是材质基色：楼宇填 (1,1,1) 走 uWallColor，车/树/地标直接用它上色。
+
+   材质编号（必须与 fs-scene 中的分支一致）：
+     0 外墙(带窗)  1 屋顶  2 地面  3 水面
+     4 车身        5 自发光  6 植被  7 实体(石材/混凝土)
+   ========================================================= */
+const FLOATS_PER_VERT = 12;
+const VERTS_PER_BOX  = 30;      // 4 面墙 × 6 + 屋顶 × 6
+const VERTS_PER_QUAD = 6;
+
+const MAT = { WALL: 0, ROOF: 1, GROUND: 2, WATER: 3, CAR: 4, GLOW: 5, FOLIAGE: 6, SOLID: 7 };
+const WHITE = [1, 1, 1];
+const ZUV = [[0, 0], [0, 0], [0, 0], [0, 0]];
+
+/* 叉积法线，用于判断当前绕序是否与给定法线同向 */
+function faceNormal(p0, p1, p2, out) {
+  const ax = p1[0] - p0[0], ay = p1[1] - p0[1], az = p1[2] - p0[2];
+  const bx = p2[0] - p0[0], by = p2[1] - p0[1], bz = p2[2] - p0[2];
+  out[0] = ay * bz - az * by;
+  out[1] = az * bx - ax * bz;
+  out[2] = ax * by - ay * bx;
+  return out[0] * out[0] + out[1] * out[1] + out[2] * out[2];
+}
+
+const _fn = [0, 0, 0];
+
+/* 压入一个四边形。顶点按任意环绕顺序给即可：
+   函数会比较叉积与给定法线，必要时自动翻转绕序 —— 手推绕序太容易出错，
+   而绕序一旦反了，整个面会被背面剔除，从外面完全看不见。 */
+function pushQuad(V, p0, p1, p2, p3, n, uv, mat, col) {
+  const c = col || WHITE;
+  faceNormal(p0, p1, p2, _fn);
+  const flip = (_fn[0] * n[0] + _fn[1] * n[1] + _fn[2] * n[2]) < 0;
+  const q = flip ? [p0, p3, p2, p1] : [p0, p1, p2, p3];
+  const u = flip ? [uv[0], uv[3], uv[2], uv[1]] : uv;
+  const tri = [q[0], q[1], q[2], q[0], q[2], q[3]];
+  const tuv = [u[0], u[1], u[2], u[0], u[2], u[3]];
+  for (let k = 0; k < 6; k++) {
+    const p = tri[k], t = tuv[k];
+    V.push(p[0], p[1], p[2], n[0], n[1], n[2], t[0], t[1], c[0], c[1], c[2], mat);
+  }
+}
+
+/* 压入一个三角形，同样自动保证绕序与法线一致 */
+function pushTri(V, p0, p1, p2, n, uv, mat, col) {
+  const c = col || WHITE;
+  faceNormal(p0, p1, p2, _fn);
+  const q = (_fn[0] * n[0] + _fn[1] * n[1] + _fn[2] * n[2]) < 0 ? [p0, p2, p1] : [p0, p1, p2];
+  for (const p of q) {
+    V.push(p[0], p[1], p[2], n[0], n[1], n[2], uv[0], uv[1], c[0], c[1], c[2], mat);
+  }
+}
+
+/* 以 (cx,cy,cz) 为中心、尺寸 (w,h,d) 的盒子：4 个侧面 + 顶面（省掉看不见的底面） */
+function pushBox(V, cx, cy, cz, w, h, d, mat, col) {
+  const hw = w / 2, hd = d / 2;
+  const x0 = cx - hw, x1 = cx + hw, z0 = cz - hd, z1 = cz + hd;
+  const y0 = cy - h / 2, y1 = cy + h / 2;
+  pushQuad(V, [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1], [0, 0, 1],  ZUV, mat, col);
+  pushQuad(V, [x1, y0, z0], [x0, y0, z0], [x0, y1, z0], [x1, y1, z0], [0, 0, -1], ZUV, mat, col);
+  pushQuad(V, [x1, y0, z1], [x1, y0, z0], [x1, y1, z0], [x1, y1, z1], [1, 0, 0],  ZUV, mat, col);
+  pushQuad(V, [x0, y0, z0], [x0, y0, z1], [x0, y1, z1], [x0, y1, z0], [-1, 0, 0], ZUV, mat, col);
+  pushQuad(V, [x0, y1, z0], [x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [0, 1, 0],  ZUV, mat, col);
+}
+
+/* 正 n 边形棱柱，可锥化（r1=0 时即为棱锥）。capTop 决定是否封顶。 */
+function pushPrism(V, cx, cz, yA, yB, rA, rB, sides, mat, col, capTop, uPer) {
+  const step = Math.PI * 2 / sides;
+  const slope = (rA - rB) / Math.max(yB - yA, 1e-6);   // 侧面法线的竖直分量
+  // uPer=true 时 u 用「沿周长的米数」，窗户才能像方楼一样连续平铺
+  const uSpan = uPer ? 2 * Math.max(rA, rB) * Math.sin(Math.PI / sides) : 1;
+  // 某一端半径收到 0 时侧面是三角形，必须走 pushTri，
+  // 否则会多出一个零面积的三角形白占顶点。
+  for (let i = 0; i < sides; i++) {
+    const a0 = i * step, a1 = (i + 1) * step;
+    const c0 = Math.cos(a0), s0 = Math.sin(a0);
+    const c1 = Math.cos(a1), s1 = Math.sin(a1);
+    const p0 = [cx + c0 * rA, yA, cz + s0 * rA];
+    const p1 = [cx + c1 * rA, yA, cz + s1 * rA];
+    const p2 = [cx + c1 * rB, yB, cz + s1 * rB];
+    const p3 = [cx + c0 * rB, yB, cz + s0 * rB];
+    const mx = (c0 + c1) / 2, mz = (s0 + s1) / 2;
+    const n = normalize3([mx, slope, mz]);
+
+    const u0 = i * uSpan, u1 = (i + 1) * uSpan;
+    if (rB < 1e-6) {
+      pushTri(V, p0, p1, [cx, yB, cz], n, [u0, yA], mat, col);
+    } else if (rA < 1e-6) {
+      pushTri(V, [cx, yA, cz], p3, p2, n, [u0, yB], mat, col);
+    } else {
+      pushQuad(V, p0, p3, p2, p1, n,
+               [[u0, yA], [u0, yB], [u1, yB], [u1, yA]], mat, col);
+    }
+  }
+  if (capTop && rB > 1e-3) {
+    for (let i = 0; i < sides; i++) {
+      const a0 = i * step, a1 = (i + 1) * step;
+      // 扇形封顶用真正的三角形
+      pushTri(V,
+        [cx, yB, cz],
+        [cx + Math.cos(a1) * rB, yB, cz + Math.sin(a1) * rB],
+        [cx + Math.cos(a0) * rB, yB, cz + Math.sin(a0) * rB],
+        [0, 1, 0], [0, yB], mat, col);
+    }
+  }
+}
+
+/* 半球穹顶（法线取真实球面方向，而不是棱柱的近似） */
+function pushDome(V, cx, cz, yBase, r, rings, sides, mat, col) {
+  const as = Math.PI * 2 / sides;
+  for (let ri = 0; ri < rings; ri++) {
+    const t0 = (ri / rings) * Math.PI / 2;
+    const t1 = ((ri + 1) / rings) * Math.PI / 2;
+    const tm = (t0 + t1) / 2;
+    const y0 = yBase + Math.sin(t0) * r, r0 = Math.cos(t0) * r;
+    const y1 = yBase + Math.sin(t1) * r, r1 = Math.cos(t1) * r;
+    for (let i = 0; i < sides; i++) {
+      const a0 = i * as, a1 = (i + 1) * as;
+      const c0 = Math.cos(a0), s0 = Math.sin(a0);
+      const c1 = Math.cos(a1), s1 = Math.sin(a1);
+      const mx = (c0 + c1) / 2, mz = (s0 + s1) / 2;
+      const ml = Math.hypot(mx, mz) || 1;
+      const ct = Math.cos(tm);
+      const n = normalize3([mx / ml * ct, Math.sin(tm), mz / ml * ct]);
+      if (r1 < 1e-6) {
+        // 顶圈退化成锥尖：用三角形，避免产生零面积的第二个三角形
+        pushTri(V,
+          [cx + c0 * r0, y0, cz + s0 * r0],
+          [cx + c1 * r0, y0, cz + s1 * r0],
+          [cx, y1, cz], n, [0, 0], mat, col);
+      } else {
+        pushQuad(V,
+          [cx + c0 * r0, y0, cz + s0 * r0],
+          [cx + c0 * r1, y1, cz + s0 * r1],
+          [cx + c1 * r1, y1, cz + s1 * r1],
+          [cx + c1 * r0, y0, cz + s1 * r0],
+          n, ZUV, mat, col);
+      }
+    }
+  }
+}
+
+/* 朝向 F 的矩形发光条（车灯用）。P = U×F，保证绕序在两种情况都正确。 */
+function pushBar(V, C, F, halfW, halfH, mat, col) {
+  const P = [F[2], 0, -F[0]];
+  const mk = (sp, su) => [
+    C[0] + P[0] * sp * halfW, C[1] + su * halfH, C[2] + P[2] * sp * halfW,
+  ];
+  pushQuad(V, mk(-1, -1), mk(1, -1), mk(1, 1), mk(-1, 1), F, ZUV, mat, col);
+}
+
+/* 双坡屋顶（人字顶）。ridgeZ 决定屋脊沿 z 还是沿 x。
+   两个斜面 + 两端山墙三角形，正好是一个三棱柱。 */
+function pushGable(V, cx, cz, y0, w, d, h, mat, col, ridgeZ) {
+  if (ridgeZ) {
+    // 屋脊沿 z：屋面朝 ±x 倾斜，山墙在 ±z 两端
+    const x0 = cx - w / 2, x1 = cx + w / 2;
+    const z0 = cz - d / 2, z1 = cz + d / 2;
+    const nW = normalize3([-h, w / 2, 0]);
+    const nE = normalize3([ h, w / 2, 0]);
+    pushQuad(V, [x0, y0, z0], [x0, y0, z1], [cx, y0 + h, z1], [cx, y0 + h, z0],
+             nW, ZUV, mat, col);
+    pushQuad(V, [x1, y0, z1], [x1, y0, z0], [cx, y0 + h, z0], [cx, y0 + h, z1],
+             nE, ZUV, mat, col);
+    pushTri(V, [x0, y0, z0], [x1, y0, z0], [cx, y0 + h, z0], [0, 0, -1], [0, 0], mat, col);
+    pushTri(V, [x1, y0, z1], [x0, y0, z1], [cx, y0 + h, z1], [0, 0,  1], [0, 0], mat, col);
+  } else {
+    // 屋脊沿 x：屋面朝 ±z 倾斜，山墙在 ±x 两端
+    const x0 = cx - w / 2, x1 = cx + w / 2;
+    const z0 = cz - d / 2, z1 = cz + d / 2;
+    const nN = normalize3([0, d / 2, -h]);
+    const nS = normalize3([0, d / 2,  h]);
+    pushQuad(V, [x0, y0, z0], [x1, y0, z0], [x1, y0 + h, cz], [x0, y0 + h, cz],
+             nN, ZUV, mat, col);
+    pushQuad(V, [x1, y0, z1], [x0, y0, z1], [x0, y0 + h, cz], [x1, y0 + h, cz],
+             nS, ZUV, mat, col);
+    pushTri(V, [x1, y0, z0], [x1, y0, z1], [x1, y0 + h, cz], [ 1, 0, 0], [0, 0], mat, col);
+    pushTri(V, [x0, y0, z1], [x0, y0, z0], [x0, y0 + h, cz], [-1, 0, 0], [0, 0], mat, col);
+  }
+}
+
+/* 一栋楼的一段：四面带窗外墙 + 屋顶。拆成函数是为了做退台和裙楼。
+   y0 是起始标高（地形高度）；墙面会再向下多延伸 SKIRT 米当裙脚，
+   这样建在坡地上的房子不会悬空。 */
+const SKIRT = 3.0;
+function pushTowerBox(V, cx, cz, w, d, y0, y1, tint, oct) {
+  const hw = w / 2, hd = d / 2;
+  const b = y0 - SKIRT;
+  const c = tint || WHITE;
+
+  if (oct) {
+    // 切角塔楼：按 x/z 各自的半宽做，窄边方向也不会越界
+    pushChamferBox(V, cx, cz, hw, hd, b, y1, MAT.WALL, c, MAT.ROOF);
+    return;
+  }
+
+  const x0 = cx - hw, x1 = cx + hw, z0 = cz - hd, z1 = cz + hd;
+  pushQuad(V, [x0, b, z1], [x1, b, z1], [x1, y1, z1], [x0, y1, z1], [0, 0, 1],
+           [[x0, b], [x1, b], [x1, y1], [x0, y1]], MAT.WALL, c);
+  pushQuad(V, [x1, b, z0], [x0, b, z0], [x0, y1, z0], [x1, y1, z0], [0, 0, -1],
+           [[x1, b], [x0, b], [x0, y1], [x1, y1]], MAT.WALL, c);
+  pushQuad(V, [x1, b, z1], [x1, b, z0], [x1, y1, z0], [x1, y1, z1], [1, 0, 0],
+           [[z1, b], [z0, b], [z0, y1], [z1, y1]], MAT.WALL, c);
+  pushQuad(V, [x0, b, z0], [x0, b, z1], [x0, y1, z1], [x0, y1, z0], [-1, 0, 0],
+           [[z0, b], [z1, b], [z1, y1], [z0, y1]], MAT.WALL, c);
+  pushQuad(V, [x0, y1, z0], [x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [0, 1, 0],
+           [[x0, z0], [x0, z1], [x1, z1], [x1, z0]], MAT.ROOF, c);
+}
+
+/* 切角楼：矩形四角各切掉一块，得到 8 边形截面。
+   rx / rz 分别是 x / z 方向的半宽 —— 不能用单一半径，
+   否则窄边方向会捅出可建范围（这正是之前踩过的坑）。
+   窗户的 u 坐标取「沿周长的米数」，所以切角面上也能正确平铺窗格。 */
+function pushChamferBox(V, cx, cz, rx, rz, yA, yB, mat, col, capMat) {
+  const k = 0.45;
+  const P = [
+    [ rx,     -rz * k], [ rx,      rz * k],
+    [ rx * k,  rz],     [-rx * k,  rz],
+    [-rx,      rz * k], [-rx,     -rz * k],
+    [-rx * k, -rz],     [ rx * k, -rz],
+  ];
+  const n = P.length;
+  const U = [];
+  let u = 0;
+  for (let i = 0; i < n; i++) {
+    U.push(u);
+    const b = P[(i + 1) % n];
+    u += Math.hypot(b[0] - P[i][0], b[1] - P[i][1]);
+  }
+  for (let i = 0; i < n; i++) {
+    const a = P[i], b = P[(i + 1) % n];
+    const mx = (a[0] + b[0]) / 2, mz = (a[1] + b[1]) / 2;
+    const nv = normalize3([mx / (rx * rx), 0, mz / (rz * rz)]);
+    pushQuad(V, [cx + a[0], yA, cz + a[1]], [cx + a[0], yB, cz + a[1]],
+                [cx + b[0], yB, cz + b[1]], [cx + b[0], yA, cz + b[1]],
+             nv, [[U[i], yA], [U[i], yB], [U[(i+1)%n], yB], [U[(i+1)%n], yA]], mat, col);
+  }
+  if (capMat !== undefined) {
+    for (let i = 1; i + 1 < n; i++) {
+      pushTri(V, [cx + P[0][0], yB, cz + P[0][1]],
+                  [cx + P[i][0], yB, cz + P[i][1]],
+                  [cx + P[i + 1][0], yB, cz + P[i + 1][1]],
+               [0, 1, 0], [0, 0], capMat, col);
+    }
+  }
+}
+
+/* pushPrism 支持按周长铺 UV（uPer=true 时用边长做 u 跨度）。 */
+
+/* 每栋楼一个轻微的外墙色调：一部分偏暖的砖石、一部分偏冷的玻璃，
+   再叠一点明暗，全城就不会是同一个灰。 */
+const FACADE_TINTS = [
+  [1.00, 1.00, 1.00], [1.00, 1.00, 1.00], [1.00, 1.00, 1.00],
+  [1.22, 1.08, 0.92],   // 暖砖
+  [1.10, 1.02, 0.96],
+  [0.86, 0.94, 1.12],   // 冷玻璃
+  [0.92, 0.96, 1.05],
+  [0.80, 0.84, 0.92],   // 深色
+  [1.14, 1.14, 1.16],   // 浅色
+];
+function facadeTint(rnd) {
+  const c = FACADE_TINTS[(rnd() * FACADE_TINTS.length) | 0];
+  const k = 0.90 + rnd() * 0.20;
+  return [c[0] * k, c[1] * k, c[2] * k];
+}
+
+/* ---------- 单栋建筑 ----------
+   所有楼都建在 terrainH() 给出的地面上；墙面再向下延伸 SKIRT 米当裙脚，
+   所以坡地上的房子不会悬空。每栋楼带自己的色调 tint，打破全城一个颜色。 */
+function buildBuilding(V, b) {
+  const { x, z, w, d, h } = b;
+  const y0 = terrainH(x, z);
+  const top = y0 + h;
+  const tint = b.tint;
+  const oct = b.oct;
+
+  if (b.kind === BLD.VILLA) {
+    /* 别墅：主体 + 坡屋顶 + 烟囱 + 可选耳房 */
+    const ROOF = [1.15, 0.72, 0.55];      // 暖色瓦顶
+    pushTowerBox(V, x, z, w, d, y0, top, tint, false);
+    pushGable(V, x, z, top, w + 0.7, d + 0.7, Math.min(w, d) * 0.34,
+              MAT.ROOF, ROOF, b.ridgeZ);
+    if (b.chimney) {
+      const along = b.ridgeZ ? [0, d * 0.26] : [w * 0.26, 0];
+      pushBox(V, x + along[0], top + 1.5, z + along[1], 0.85, 2.8, 0.85,
+              MAT.SOLID, [1.15, 1.05, 0.98]);
+    }
+    if (b.wing) {
+      const s2 = 0.36;
+      const ox = b.ridgeZ ? w * 0.52 : 0;
+      const oz = b.ridgeZ ? 0 : d * 0.52;
+      const wy = terrainH(x + ox, z + oz);
+      const wh = top - wy;                     // 耳房同样从地面起
+      pushTowerBox(V, x + ox, z + oz, w * s2, d * s2, wy, wy + wh * 0.72, tint, false);
+      pushGable(V, x + ox, z + oz, wy + wh * 0.72, w * s2 + 0.5, d * s2 + 0.5,
+                Math.min(w, d) * s2 * 0.34, MAT.ROOF, ROOF, b.ridgeZ);
+    }
+    return;
+  }
+
+  if (b.kind === BLD.TOWER) {
+    /* 高层：退台 + 冠顶 + 天线（带航空障碍灯） */
+    if (b.setback) {
+      const h1 = y0 + h * 0.46, h2 = y0 + h * 0.78;
+      pushTowerBox(V, x, z, w, d, y0, h1, tint, oct);
+      pushTowerBox(V, x, z, w * 0.76, d * 0.76, h1, h2, tint, oct);
+      pushTowerBox(V, x, z, w * 0.54, d * 0.54, h2, top, tint, oct);
+      if (b.crown) {
+        const rb = Math.min(w, d) * 0.5;
+        pushPrism(V, x, z, top, top + h * 0.10, rb, 0, 4, MAT.SOLID, [1.1, 1.1, 1.15], false);
+        pushPrism(V, x, z, top + h * 0.10, top + h * 0.30, 0.55, 0, 6, MAT.SOLID,
+                  [1.35, 1.35, 1.4], false);
+        pushBox(V, x, top + h * 0.30, z, 1.1, 1.1, 1.1, MAT.GLOW, [1.0, 0.25, 0.2]);
+      }
+    } else {
+      pushTowerBox(V, x, z, w, d, y0, top, tint, oct);
+      if (b.crown) {
+        pushPrism(V, x, z, top, top + h * 0.26, Math.min(w, d) * 0.16, 0, 6, MAT.SOLID,
+                  [1.35, 1.35, 1.4], false);
+        pushBox(V, x, top + h * 0.26, z, 1.1, 1.1, 1.1, MAT.GLOW, [1.0, 0.25, 0.2]);
+      }
+    }
+    pushBox(V, x + w * 0.18, top + 1.4, z - d * 0.18, w * 0.3, 2.8, d * 0.3,
+            MAT.SOLID, [0.95, 0.95, 1.0]);
+    return;
+  }
+
+  if (b.kind === BLD.MID) {
+    /* 中层：裙楼 + 塔身 */
+    if (b.podium) {
+      const ph = Math.min(h * 0.3, 9) + y0;
+      pushTowerBox(V, x, z, w, d, y0, ph, tint, false);
+      pushTowerBox(V, x, z, w * 0.68, d * 0.68, ph, top, tint, oct);
+      if (b.ledge) {
+        const t = 0.5;
+        pushBox(V, x, ph + t / 2, z - d / 2 + t / 2, w, t, t, MAT.SOLID, [1.05, 1.05, 1.08]);
+        pushBox(V, x, ph + t / 2, z + d / 2 - t / 2, w, t, t, MAT.SOLID, [1.05, 1.05, 1.08]);
+        pushBox(V, x - w / 2 + t / 2, ph + t / 2, z, t, t, d, MAT.SOLID, [1.05, 1.05, 1.08]);
+        pushBox(V, x + w / 2 - t / 2, ph + t / 2, z, t, t, d, MAT.SOLID, [1.05, 1.05, 1.08]);
+      }
+    } else {
+      pushTowerBox(V, x, z, w, d, y0, top, tint, oct);
+    }
+    pushBox(V, x - w * 0.2, top + h * 0.035, z + d * 0.2, w * 0.3, h * 0.07 + 1.2, d * 0.3,
+            MAT.SOLID, [1, 1, 1]);
+    return;
+  }
+
+  /* 低层：方盒 + 女儿墙 + 屋顶设备 */
+  pushTowerBox(V, x, z, w, d, y0, top, tint, false);
+  if (b.ledge && w > 8 && d > 8) {
+    const t = 0.55, lh = 0.75;
+    pushBox(V, x, top + lh / 2, z - d / 2 + t / 2, w, lh, t, MAT.SOLID, [1.05, 1.05, 1.08]);
+    pushBox(V, x, top + lh / 2, z + d / 2 - t / 2, w, lh, t, MAT.SOLID, [1.05, 1.05, 1.08]);
+    pushBox(V, x - w / 2 + t / 2, top + lh / 2, z, t, lh, d, MAT.SOLID, [1.05, 1.05, 1.08]);
+    pushBox(V, x + w / 2 - t / 2, top + lh / 2, z, t, lh, d, MAT.SOLID, [1.05, 1.05, 1.08]);
+  }
+  if (w > 9 || d > 9) {
+    pushBox(V, x + w * 0.15, top + 1.1, z - d * 0.15, w * 0.34, 2.2, d * 0.34,
+            MAT.SOLID, [0.95, 0.95, 1.0]);
+  }
+}
+
+function buildCityMesh() {
+  const V = [];
+  for (const b of buildings) buildBuilding(V, b);
+  return V;
+}
+
+/* ---------- 标志性建筑 ---------- */
+const STONE = [1.25, 1.22, 1.18];
+const GOLD  = [1.9, 1.42, 0.55];
+
+function buildLandmarks(V) {
+  for (const L of LANDMARKS) {
+    const { x, z, type } = L;
+    const gy = terrainH(x, z);   // 地标坐落在自己那块地上
+
+    if (type === 'tower') {
+      // 电视塔：锥形塔身 -> 观景盘 -> 细颈 -> 针状天线
+      pushPrism(V, x, z, gy - 3, 96, 6.4, 3.6, 8, MAT.SOLID, STONE, false);
+      pushPrism(V, x, z, 96, 104, 5.2, 10.6, 12, MAT.SOLID, STONE, false);
+      pushPrism(V, x, z, 104, 116, 10.6, 9.6, 12, MAT.SOLID, [1.05, 1.05, 1.1], true);
+      pushPrism(V, x, z, 116, 152, 3.0, 1.9, 8, MAT.SOLID, STONE, false);
+      pushPrism(V, x, z, 152, 176, 1.1, 0.0, 6, MAT.SOLID, [1.6, 1.6, 1.65], false);
+      // 观景盘外圈的灯带 + 塔顶航空障碍灯
+      pushPrism(V, x, z, 117.5, 119.5, 9.9, 9.9, 12, MAT.GLOW, [1.0, 0.72, 0.35], false);
+      pushBox(V, x, 178, z, 1.6, 1.6, 1.6, MAT.GLOW, [1.0, 0.25, 0.2]);
+      L.shadow = { w: 21.2, d: 21.2, h: 176 };
+      L.h = 179;
+
+    } else if (type === 'pyramid') {
+      // 金字塔：四棱锥 + 发光顶
+      const r = 9.3, h = 34;
+      pushPrism(V, x, z, gy - 3, h, r, 0, 4, MAT.SOLID, [1.35, 1.28, 1.05], false);
+      pushPrism(V, x, z, h - 2.5, h + 2.6, 1.5, 0, 4, MAT.GLOW, GOLD, false);
+      // 底座台阶
+      pushPrism(V, x, z, gy - 3, gy + 1.6, r * 1.18, r * 1.12, 4, MAT.SOLID, [0.95, 0.92, 0.86], true);
+      L.shadow = { w: r * 2.36, d: r * 2.36, h: h + 3 };
+      L.h = h + 3;
+
+    } else if (type === 'dome') {
+      // 穹顶大殿：环形基座 + 金顶（颜色偏暖，夜里灯带一圈很显眼）
+      const ro = LOT / 2 - 0.2, ri = ro - 1.1, drumH = 20;
+      pushPrism(V, x, z, gy - 3, drumH, ro, ri, 16, MAT.SOLID, [1.05, 1.04, 1.02], false);
+      pushDome(V, x, z, drumH, ri, 6, 16, MAT.SOLID, [1.30, 0.98, 0.46]);
+      // 环形灯带
+      pushPrism(V, x, z, drumH + 0.2, drumH + 1.6, ri + 0.05, ri + 0.05, 16,
+                MAT.GLOW, [0.85, 0.92, 1.0], false);
+      L.shadow = { w: ro * 2, d: ro * 2, h: drumH + ri };
+      L.h = drumH + ri;
+
+    } else if (type === 'spire') {
+      // 玻璃尖塔：锥形幕墙楼（带窗）+ 发光冠
+      const h = 210, rb = 11.0;
+      pushPrism(V, x, z, gy - 3, h * 0.72, rb, 7.4, 4, MAT.WALL, [1, 1, 1], false, true);
+      pushPrism(V, x, z, h * 0.72, h, 7.4, 1.2, 4, MAT.WALL, [1, 1, 1], false, true);
+      pushPrism(V, x, z, h, h + 16, 1.6, 0, 6, MAT.GLOW, [1.0, 0.86, 0.5], false);
+      pushPrism(V, x, z, h * 0.70, h * 0.73, 11.0, 8.4, 4, MAT.GLOW, [0.6, 0.85, 1.0], false);
+      L.shadow = { w: rb * 2, d: rb * 2, h: h + 16 };
+      L.h = h + 16;
+    }
+  }
+  return V;
+}
+
+/* ---------- 树木 ----------
+   院子里用「小树」（单锥，便宜），公园和河岸用「大树」（双锥，有体积感）。 */
+function pushTree(V, x, z, h, r, rnd, small) {
+  const TRUNK = [0.42, 0.31, 0.21];
+  const y0 = terrainH(x, z);
+  pushBox(V, x, y0 + h * 0.30, z, 0.7, h * 0.6 + 1.5, 0.7, MAT.FOLIAGE, TRUNK);
+  const g = 0.62 + rnd() * 0.45;
+  const green = [g * 0.42, g * 0.86, g * 0.48];
+  if (small) {
+    pushPrism(V, x, z, y0 + h * 0.42, y0 + h * 1.15, r, 0, 5, MAT.FOLIAGE, green, false);
+  } else {
+    pushPrism(V, x, z, y0 + h * 0.45, y0 + h * 0.92, r, r * 0.35, 6, MAT.FOLIAGE, green, true);
+    pushPrism(V, x, z, y0 + h * 0.80, y0 + h * 1.25, r * 0.72, 0, 6, MAT.FOLIAGE,
+              [green[0] * 1.14, green[1] * 1.14, green[2] * 1.14], false);
+  }
+}
+
+function buildTrees(V, rnd) {
+  const spots = [];        // [x, z, 尺寸]  尺寸 0=小树 1=大树
+  // 公园里成片种树
+  for (const p of parks) {
+    const n = 5 + ((rnd() * 5) | 0);
+    for (let i = 0; i < n; i++) {
+      spots.push([p.x + (rnd() - 0.5) * LOT * 0.82, p.z + (rnd() - 0.5) * LOT * 0.82, 1]);
+    }
+  }
+  // 河岸沿线也种一排，软化水陆交界
+  for (let z = -GRID * BLOCK; z <= GRID * BLOCK; z += 17) {
+    const rx = riverCenterX(z);
+    for (const s of [-1, 1]) {
+      const x = rx + s * (RIVER.halfW + RIVER.bank * 0.55);
+      if (Math.abs(x) > GRID * BLOCK + 20) continue;
+      spots.push([x, z + (rnd() - 0.5) * 6, 1]);
+    }
+  }
+  // 别墅院子：种在四角，避开房子本体
+  for (const g of gardens) {
+    const n = 1 + ((rnd() * 3) | 0);
+    for (let i = 0; i < n; i++) {
+      const a = rnd() * Math.PI * 2;
+      const rad = LOT * (0.30 + rnd() * 0.16);
+      spots.push([g.x + Math.cos(a) * rad, g.z + Math.sin(a) * rad, 0]);
+    }
+  }
+
+  // 环路两侧的绿化带：这一圈是主城区与郊区的分界
+  for (let a = 0; a < Math.PI * 2; a += 0.026) {
+    for (const rad of [SUBURB_R - RING_HALF - 9, SUBURB_R + RING_HALF + 9]) {
+      const x = Math.cos(a) * rad, z = Math.sin(a) * rad;
+      if (Math.abs(x) > GRID * BLOCK + 60 || Math.abs(z) > GRID * BLOCK + 60) continue;
+      spots.push([x + (rnd() - 0.5) * 5, z + (rnd() - 0.5) * 5, 1]);
+    }
+  }
+
+  for (const [x, z, big] of spots) {
+    const h = big ? 5.5 + rnd() * 5.5 : 3.6 + rnd() * 2.6;
+    const r = h * (big ? 0.30 + rnd() * 0.10 : 0.26 + rnd() * 0.08);
+    pushTree(V, x, z, h, r, rnd, !big);
+  }
+  cityStats.trees = spots.length;
+  return V;
+}
+
+/* ---------- 高架快速路与立交枢纽 ----------
+   快速路沿既有道路走廊架起，不额外占地；立交处四条环形匝道 + 四条定向匝道
+   把高架和地面道路连起来。匝道沿参数曲线扫出带状桥面，桥墩落到地形高度。 */
+const EXPRESS = {
+  coord: 0,           // 沿 z 方向，位于 x=0 的既有道路走廊上
+  deckY: 15.5,        // 桥面标高
+  halfW: 8.6,          // 必须 ≤ 道路半宽 8.8，否则会切进两侧街区
+  reach: 620,         // 南北延伸范围
+  seg: 8,             // 每段长度
+};
+const INTERCHANGES = [
+  { x: 0, z:  168, type: 'clover'  },   // 四叶草：4 环形 + 4 定向匝道
+  { x: 0, z: -252, type: 'diamond' },   // 菱形：4 定向匝道
+];
+const IC_CLEAR = { clover: 116, diamond: 100 };   // 各型立交的留空半径
+
+function inInterchangeZone(cx, cz) {
+  const h = BLOCK / 2;
+  for (const ic of INTERCHANGES) {
+    const dx = Math.max(0, Math.abs(cx - ic.x) - h);
+    const dz = Math.max(0, Math.abs(cz - ic.z) - h);
+    if (Math.hypot(dx, dz) < IC_CLEAR[ic.type]) return true;
+  }
+  return false;
+}
+
+const RAMP_HALF = 4.6;                  // 匝道半宽
+const RAMP_TH   = 1.1;                  // 匝道厚度
+const DECK_COL  = [1.14, 1.12, 1.09];
+const RAIL_COL  = [0.90, 0.88, 0.86];
+
+/* 沿参数曲线 pt(t)->[x,y,z] 扫出一条带状桥面（含腹板、护栏、桥墩） */
+function pushRamp(V, pt, seg, pierEvery) {
+  const P = [], T = [];
+  for (let i = 0; i <= seg; i++) {
+    const t = i / seg;
+    const p = pt(t);
+    const q = pt(Math.min(1, t + 0.004));
+    const r = pt(Math.max(0, t - 0.004));
+    let dx = q[0] - r[0], dz = q[2] - r[2];
+    const L = Math.hypot(dx, dz) || 1;
+    P.push(p); T.push([dx / L, dz / L]);
+  }
+  const RH = 0.95, RT = 0.26;           // 护栏高 / 厚
+
+  for (let i = 0; i < seg; i++) {
+    const a = P[i], b = P[i + 1];
+    const na = [T[i][1], -T[i][0]], nb = [T[i + 1][1], -T[i + 1][0]];
+    const pt4 = (p, n, s, y) => [p[0] + n[0] * s, y, p[2] + n[1] * s];
+
+    const A0 = pt4(a, na,  RAMP_HALF, a[1]), A1 = pt4(a, na, -RAMP_HALF, a[1]);
+    const B0 = pt4(b, nb,  RAMP_HALF, b[1]), B1 = pt4(b, nb, -RAMP_HALF, b[1]);
+
+    // 桥面
+    pushQuad(V, A0, B0, B1, A1, [0, 1, 0], ZUV, MAT.SOLID, DECK_COL);
+    // 两侧腹板
+    pushQuad(V, A0, B0, [B0[0], B0[1] - RAMP_TH, B0[2]], [A0[0], A0[1] - RAMP_TH, A0[2]],
+             [na[0], 0, na[1]], ZUV, MAT.SOLID, RAIL_COL);
+    pushQuad(V, [A1[0], A1[1] - RAMP_TH, A1[2]], [B1[0], B1[1] - RAMP_TH, B1[2]], B1, A1,
+             [-na[0], 0, -na[1]], ZUV, MAT.SOLID, RAIL_COL);
+    // 护栏内外两面
+    for (const sd of [1, -1]) {
+      const n = [na[0] * sd, 0, na[1] * sd];
+      const oOut = sd * RAMP_HALF, oIn = sd * (RAMP_HALF - RT);
+      pushQuad(V, pt4(a, na, oOut, a[1] + RH), pt4(b, nb, oOut, b[1] + RH),
+                  pt4(b, nb, oOut, b[1]),      pt4(a, na, oOut, a[1]), n, ZUV, MAT.SOLID, RAIL_COL);
+      pushQuad(V, pt4(a, na, oIn, a[1]),       pt4(b, nb, oIn, b[1]),
+                  pt4(b, nb, oIn, b[1] + RH),  pt4(a, na, oIn, a[1] + RH),
+               [-n[0], 0, -n[2]], ZUV, MAT.SOLID, RAIL_COL);
+    }
+    // 桥墩：落到地形
+    if (pierEvery && i % pierEvery === 0 && a[1] > 2.5) {
+      const gy = terrainH(a[0], a[2]);
+      const hgt = a[1] - RAMP_TH - gy;
+      if (hgt > 1.5) pushBox(V, a[0], gy + hgt / 2, a[2], 2.0, hgt, 2.0, MAT.SOLID, RAIL_COL);
+    }
+  }
+}
+
+/* 高架桥面：沿两轴之一铺一条宽路，带护栏和桥墩 */
+function buildExpressway(V) {
+  const { coord, deckY, halfW, reach, seg } = EXPRESS;
+  for (let z = -reach; z < reach; z += seg) {
+    const z0 = z, z1 = Math.min(z + seg, reach);
+    const W = (zz, off, y) => [coord + off, y, zz];
+    pushQuad(V, W(z0, -halfW, deckY), W(z1, -halfW, deckY),
+                W(z1,  halfW, deckY), W(z0,  halfW, deckY), [0, 1, 0], ZUV, MAT.SOLID, DECK_COL);
+    for (const sd of [-1, 1]) {
+      pushQuad(V, W(z0, sd * halfW, deckY), W(z1, sd * halfW, deckY),
+                  W(z1, sd * halfW, deckY - 2.2), W(z0, sd * halfW, deckY - 2.2),
+               [sd, 0, 0], ZUV, MAT.SOLID, RAIL_COL);
+    }
+    // 中央分隔带护栏
+    for (const sd of [-1, 1]) {
+      pushQuad(V, W(z0, sd * 0.7, deckY + 1.1), W(z1, sd * 0.7, deckY + 1.1),
+                  W(z1, sd * 0.7, deckY),       W(z0, sd * 0.7, deckY),
+               [sd, 0, 0], ZUV, MAT.SOLID, [1.0, 0.98, 0.95]);
+    }
+    // 外侧防撞墙
+    for (const sd of [-1, 1]) {
+      const xo = sd * halfW;
+      pushQuad(V, W(z0, xo, deckY + 1.0), W(z1, xo, deckY + 1.0),
+                  W(z1, xo, deckY),       W(z0, xo, deckY),
+               [sd, 0, 0], ZUV, MAT.SOLID, [1.05, 1.03, 1.0]);
+      pushQuad(V, W(z0, xo - sd * 0.35, deckY), W(z1, xo - sd * 0.35, deckY),
+                  W(z1, xo - sd * 0.35, deckY + 1.0), W(z0, xo - sd * 0.35, deckY + 1.0),
+               [-sd, 0, 0], ZUV, MAT.SOLID, [1.05, 1.03, 1.0]);
+    }
+  }
+  // 桥墩
+  for (let z = -reach + 14; z < reach; z += 28) {
+    const gy = terrainH(coord, z);
+    const hgt = deckY - 2.2 - gy;
+    if (hgt > 2) {
+      for (const off of [-halfW * 0.42, halfW * 0.42]) {
+        pushBox(V, coord + off, gy + hgt / 2, z, 2.6, hgt, 2.6, MAT.SOLID, [0.86, 0.85, 0.84]);
+      }
+      // 盖梁
+      pushBox(V, coord, deckY - 2.2 - 0.6, z, halfW * 1.7, 1.2, 2.2, MAT.SOLID, [0.88, 0.87, 0.86]);
+    }
+  }
+}
+
+/* 一个立交枢纽 */
+function buildInterchange(V, ic) {
+  const H = EXPRESS.deckY;
+
+  if (ic.type === 'clover') {
+    // 四个象限各一条 270° 环形匝道：从地面道路盘旋爬升到高架
+    const R = 36, CX = 6 + R, CZ = 10 + R;
+    for (const sx of [1, -1]) {
+      for (const sz of [1, -1]) {
+        const cx = ic.x + sx * CX, cz = ic.z + sz * CZ;
+        const dir = sx * sz;                       // 盘旋方向
+        const start = sz > 0 ? -Math.PI / 2 : Math.PI / 2;
+        const a0 = start, a1 = start + dir * (Math.PI * 1.5);
+        const pt = (t) => {
+          const a = lerp(a0, a1, t);
+          const y = lerp(0.4, H, t * t * (3 - 2 * t));
+          return [cx + Math.cos(a) * R, y, cz + Math.sin(a) * R];
+        };
+        pushRamp(V, pt, 34, 7);
+      }
+    }
+  }
+
+  // 定向匝道：从地面道路斜向汇入高架（菱形立交只有这个）
+  const DIAG = 82;
+  for (const sx of [1, -1]) {
+    for (const sz of [1, -1]) {
+      const pt = (t) => {
+        const x = ic.x + sx * lerp(DIAG, EXPRESS.halfW - RAMP_HALF, t);
+        const z = ic.z + sz * lerp(EXPRESS.halfW + RAMP_HALF + 30, DIAG, t);
+        const y = lerp(0.4, H, t * t * (3 - 2 * t));
+        return [x, y, z];
+      };
+      pushRamp(V, pt, 20, 6);
+    }
+  }
+}
+
+/* ---------- 桥梁 ---------- */
+const ROAD_HALF = BLOCK * ROAD;      // 道路半宽 8.8m
+const BRIDGE_H  = 3.4;               // 桥面拱高
+
+/* 采样找出道路跨水的区间（k 为道路标识，axis/coord 见 buildRoads） */
+function findWaterSpans(axis, coord) {
+  const lim = GRID * BLOCK + 60, step = 5;
+  const out = [];
+  let cur = null;
+  for (let s = -lim; s <= lim; s += step) {
+    const over = axis === 'z'
+      ? Math.abs(coord - riverCenterX(s)) < RIVER.halfW
+      : Math.abs(s - riverCenterX(coord)) < RIVER.halfW;
+    if (over) { if (!cur) cur = [s, s]; else cur[1] = s; }
+    else if (cur) { out.push(cur); cur = null; }
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
+/* 桥面在道路坐标 s 处的高度（拱形）。车辆也用它，保证车贴着桥走。 */
+function bridgeHeightAt(spans, s) {
+  for (const [a, b] of spans) {
+    const s0 = a - 9, s1 = b + 9;           // 比水面区间多出两端的引桥
+    if (s > s0 && s < s1) {
+      const t = (s - s0) / (s1 - s0);
+      return Math.sin(Math.PI * t) * BRIDGE_H;
+    }
+  }
+  return 0;
+}
+
+function buildBridges(V, roadList) {
+  const DECK = [1.10, 1.08, 1.05];
+  const RAIL = [0.92, 0.90, 0.88];
+  let count = 0;
+
+  for (const road of roadList) {
+    const spans = road.spans;
+    if (!spans || !spans.length) continue;
+    count += spans.length;
+
+    const along = road.axis === 'z';
+    const TH = 1.5;                     // 桥体厚度
+    const RW = ROAD_HALF;               // 桥面半宽
+    // 沿道路方向的坐标 -> 世界坐标
+    const W = (s, off, y) => along ? [road.coord + off, y, s] : [s, y, road.coord + off];
+
+    for (const [a, b] of spans) {
+      const s0 = a - 9, s1 = b + 9, seg = 12;
+      const yAt = t => Math.sin(Math.PI * t) * BRIDGE_H;
+
+      for (let i = 0; i < seg; i++) {
+        const t0 = i / seg, t1 = (i + 1) / seg;
+        const p0 = lerp(s0, s1, t0), p1 = lerp(s0, s1, t1);
+        const y0 = yAt(t0), y1 = yAt(t1);
+
+        // 桥面（顶面）
+        pushQuad(V, W(p0, -RW, y0), W(p1, -RW, y1), W(p1, RW, y1), W(p0, RW, y0),
+                 [0, 1, 0], ZUV, MAT.SOLID, DECK);
+        // 两侧腹板
+        for (const sd of [-1, 1]) {
+          const n = along ? [sd, 0, 0] : [0, 0, sd];
+          pushQuad(V, W(p0, sd * RW, y0), W(p1, sd * RW, y1),
+                      W(p1, sd * RW, y1 - TH), W(p0, sd * RW, y0 - TH),
+                   n, ZUV, MAT.SOLID, RAIL);
+        }
+        // 栏杆：内外两面
+        for (const sd of [-1, 1]) {
+          const nOut = along ? [sd, 0, 0] : [0, 0, sd];
+          const nIn  = [-nOut[0], 0, -nOut[2]];
+          const hR = 0.95, tR = 0.22;
+          const oIn = sd * (RW - tR), oOut = sd * RW;
+          pushQuad(V, W(p0, oOut, y0 + hR), W(p1, oOut, y1 + hR),
+                      W(p1, oOut, y1), W(p0, oOut, y0), nOut, ZUV, MAT.SOLID, RAIL);
+          pushQuad(V, W(p0, oIn, y0), W(p1, oIn, y1),
+                      W(p1, oIn, y1 + hR), W(p0, oIn, y0 + hR), nIn, ZUV, MAT.SOLID, RAIL);
+        }
+      }
+      // 桥墩
+      const mid = (s0 + s1) / 2;
+      for (const off of [-RW * 0.62, RW * 0.62]) {
+        const [px, , pz] = along ? [road.coord + off, 0, mid] : [mid, 0, road.coord + off];
+        pushBox(V, px, yAt(0.5) / 2 - 0.6, pz, 1.5, yAt(0.5) + 1.2, 1.5, MAT.SOLID, RAIL);
+      }
+    }
+  }
+  cityStats.bridges = count;
+  return V;
+}
+
+/* ---------- 水面 ---------- */
+function buildWaterMesh() {
+  const V = [];
+  // 必须和地面一样铺到雾的尽头，否则远处会看到河突然断掉
+  const lim = 1660, step = 6;
+  for (let z = -lim; z < lim; z += step) {
+    const z0 = z, z1 = z + step;
+    const a0 = riverCenterX(z0), a1 = riverCenterX(z1);
+    const y = RIVER.level;
+    pushQuad(V,
+      [a0 - RIVER.halfW, y, z0], [a1 - RIVER.halfW, y, z1],
+      [a1 + RIVER.halfW, y, z1], [a0 + RIVER.halfW, y, z0],
+      [0, 1, 0], [[a0 - RIVER.halfW, z0], [a1 - RIVER.halfW, z1],
+                  [a1 + RIVER.halfW, z1], [a0 + RIVER.halfW, z0]], MAT.WATER);
+  }
+  return V;
+}
+
+/* =========================================================
+   3.5 道路与车流
+   车辆几何每帧重建（和阴影一样写进动态缓冲），这样不用实例化扩展
+   也能让上百辆车各自有颜色、贴着拱桥起伏。
+   ========================================================= */
+const roads = [];
+const cars = [];
+const LANE_OFF = 4.4;                      // 车道中心相对道路中线的偏移
+const ROAD_LIMIT = GRID * BLOCK + 60;      // 车辆循环的活动范围
+
+const CAR_PAINT = [
+  [0.84, 0.19, 0.21], [0.15, 0.33, 0.70], [0.88, 0.89, 0.91], [0.17, 0.18, 0.21],
+  [0.22, 0.50, 0.33], [0.90, 0.70, 0.19], [0.53, 0.23, 0.60], [0.28, 0.58, 0.66],
+  [0.70, 0.72, 0.76], [0.78, 0.43, 0.15],
+];
+
+function buildRoads(seed) {
+  const rnd = mulberry32(seed ^ 0x9E3779B9);
+  roads.length = 0;
+  cars.length = 0;
+
+  for (let k = -GRID; k <= GRID; k++) {
+    roads.push({ axis: 'z', coord: k * BLOCK, spans: findWaterSpans('z', k * BLOCK) });
+    roads.push({ axis: 'x', coord: k * BLOCK, spans: findWaterSpans('x', k * BLOCK) });
+  }
+
+  // 高架快速路：四条车道，桥面标高固定，不受地面桥梁影响
+  roads.push({
+    axis: 'z', coord: EXPRESS.coord, spans: [], deckY: EXPRESS.deckY,
+    lanes: [-6.2, -2.1, 2.1, 6.2], fast: true,
+    limit: EXPRESS.reach,
+  });
+
+  for (const road of roads) {
+    const lanes = road.lanes || [-LANE_OFF, LANE_OFF];
+    for (const lane of lanes) {
+      const dir = lane < 0 ? 1 : -1;       // 右侧通行
+      for (let i = 0; i < 2; i++) {
+        cars.push({
+          road, lane, dir,
+          s: -(road.limit || ROAD_LIMIT) + rnd() * (road.limit || ROAD_LIMIT) * 2,
+          // 高架上车少、跑得快
+          speed: road.fast ? 26 + rnd() * 14 : 9 + rnd() * 10,
+          col: CAR_PAINT[(rnd() * CAR_PAINT.length) | 0],
+        });
+      }
+    }
+  }
+}
+
+function updateCars(dt) {
+  for (const c of cars) {
+    const lim = c.road.limit || ROAD_LIMIT;
+    c.s += c.dir * c.speed * dt;
+    if (c.s > lim) c.s = -lim;
+    else if (c.s < -lim) c.s = lim;
+  }
+}
+
+const CAR_MAX_VERTS = 40000;
+const carBuf = new Float32Array(CAR_MAX_VERTS * FLOATS_PER_VERT);
+const carScratch = [];                     // 复用，避免每帧重新分配
+
+function buildCarMesh() {
+  const V = carScratch;
+  V.length = 0;
+  const HEAD = [1.00, 0.95, 0.76];
+  const TAIL = [1.00, 0.15, 0.11];
+  const LEN = 4.4, WID = 1.95;
+
+  for (const c of cars) {
+    const along = c.road.axis === 'z';
+    const off = c.road.coord + c.lane;
+    const x = along ? off : c.s;
+    const z = along ? c.s : off;
+    // 车身中心高度 = 地形 / 高架桥面 + 拱桥起伏
+    const baseY = c.road.deckY !== undefined ? c.road.deckY
+                                             : terrainH(x, z);
+    const y = baseY + bridgeHeightAt(c.road.spans, c.s) + 0.64;
+
+    const w = along ? WID : LEN;
+    const d = along ? LEN : WID;
+
+    pushBox(V, x, y, z, w, 1.12, d, MAT.CAR, c.col);
+    // 车厢（比车身暗一点，避免整块死白）
+    const k = 0.40;
+    pushBox(V, x, y + 0.73, z, w * 0.80, 0.62, d * 0.50, MAT.CAR,
+            [c.col[0] * k + 0.05, c.col[1] * k + 0.05, c.col[2] * k + 0.05]);
+
+    // 车灯：车头朝行进方向
+    const F = along ? [0, 0, c.dir] : [c.dir, 0, 0];
+    const hl = LEN / 2 + 0.05;
+    pushBar(V, [x + F[0] * hl, y - 0.1, z + F[2] * hl], F, 0.70, 0.13, MAT.GLOW, HEAD);
+    pushBar(V, [x - F[0] * hl, y - 0.1, z - F[2] * hl], [-F[0], 0, -F[2]], 0.68, 0.12, MAT.GLOW, TAIL);
+  }
+
+  if (V.length > carBuf.length) V.length = carBuf.length;
+  carBuf.set(V);
+  return (V.length / FLOATS_PER_VERT) | 0;
+}
+
+/* 地面：贴合地形的网格。采样点按 t·(a+(1-a)t²) 分布 —— 中心密、边缘疏，
+   这样主城区有足够精度，而被雾吞掉的远郊可以用很大的格子。
+   aUV 直接存世界 xz，供着色器画路网、河岸和环路。 */
+function buildGroundMesh(extent, N, centerFrac) {
+  const V = [];
+  const xs = new Float64Array(N + 1);
+  for (let i = 0; i <= N; i++) {
+    const t = (i / N) * 2 - 1;
+    xs[i] = extent * t * (centerFrac + (1 - centerFrac) * t * t);
+  }
+  // 预计算高度与法线，避免每条边重复求值
+  const H = new Float64Array((N + 1) * (N + 1));
+  const NR = new Float32Array((N + 1) * (N + 1) * 3);
+  for (let j = 0; j <= N; j++) {
+    for (let i = 0; i <= N; i++) {
+      const x = xs[i], z = xs[j], k = j * (N + 1) + i;
+      H[k] = terrainH(x, z);
+      const n = terrainNormal(x, z);
+      NR[k * 3] = n[0]; NR[k * 3 + 1] = n[1]; NR[k * 3 + 2] = n[2];
+    }
+  }
+  const emit = (i, j) => {
+    const k = j * (N + 1) + i, x = xs[i], z = xs[j];
+    V.push(x, H[k], z, NR[k * 3], NR[k * 3 + 1], NR[k * 3 + 2],
+           x, z, 1, 1, 1, MAT.GROUND);
+  };
+  for (let j = 0; j < N; j++) {
+    for (let i = 0; i < N; i++) {
+      emit(i, j); emit(i, j + 1); emit(i + 1, j + 1);   // 从上方看逆时针
+      emit(i, j); emit(i + 1, j + 1); emit(i + 1, j);
+    }
+  }
+  return V;
+}
+
+/* =========================================================
+   4. 平面投影阴影
+   平行光下，长方体的影子 = 它 8 个角沿光线投到地面的点的凸包。
+   ========================================================= */
+function convexHull(pts) {
+  if (pts.length < 3) return pts;
+  const p = pts.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const cross = (o, a, b) =>
+    (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lower = [];
+  for (const q of p) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], q) <= 0) lower.pop();
+    lower.push(q);
+  }
+  const upper = [];
+  for (let i = p.length - 1; i >= 0; i--) {
+    const q = p[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], q) <= 0) upper.pop();
+    upper.push(q);
+  }
+  lower.pop(); upper.pop();
+  return lower.concat(upper);
+}
+
+const SHADOW_Y = 0.22;          // 略微抬高，避免与地面 z-fighting
+const MAX_SHADOW_VERTS = 120000;
+const shadowData = new Float32Array(MAX_SHADOW_VERTS * 3);
+
+/* 返回实际写入的顶点数。lightDir 是光线传播方向（由太阳指向地面）。 */
+function buildShadows(lightDir) {
+  let n = 0;
+  const ly = lightDir[1];
+  if (ly > -0.10) return 0;                     // 太阳太低，影子会拉到无穷远
+
+  const inv = 1 / -ly;
+  const pts = [];
+  for (const b of shadowCasters) {
+    const hw = b.w / 2, hd = b.d / 2;
+    const x0 = b.x - hw, x1 = b.x + hw;
+    const z0 = b.z - hd, z1 = b.z + hd;
+    const h  = b.h;
+
+    pts.length = 0;
+    for (const X of [x0, x1]) {
+      for (const Z of [z0, z1]) {
+        // 底面四角本来就在 y=0 上
+        pts.push([X, Z]);
+        // 顶面四角沿光线投到 y=0
+        const t = h * inv;
+        pts.push([X + lightDir[0] * t, Z + lightDir[2] * t]);
+      }
+    }
+
+    const hull = convexHull(pts);
+    if (hull.length < 3) continue;
+    for (let i = 1; i + 1 < hull.length; i++) {
+      if (n + 3 > MAX_SHADOW_VERTS) return n;
+      // 每个顶点各自贴合地形高度，影子就会顺着坡面铺开而不是插进山里
+      const a = hull[0], c = hull[i], d = hull[i + 1];
+      shadowData[n * 3]     = a[0]; shadowData[n * 3 + 1] = terrainH(a[0], a[1]) + SHADOW_Y; shadowData[n * 3 + 2] = a[1];
+      shadowData[n * 3 + 3] = c[0]; shadowData[n * 3 + 4] = terrainH(c[0], c[1]) + SHADOW_Y; shadowData[n * 3 + 5] = c[1];
+      shadowData[n * 3 + 6] = d[0]; shadowData[n * 3 + 7] = terrainH(d[0], d[1]) + SHADOW_Y; shadowData[n * 3 + 8] = d[1];
+      n += 3;
+    }
+  }
+  return n;
+}
+
+/* =========================================================
+   5. WebGL 初始化
+   ========================================================= */
+function compile(type, src, label) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    fatal(label + ' 着色器编译失败：<br><pre style="text-align:left;font-size:12px;white-space:pre-wrap">' +
+          gl.getShaderInfoLog(s) + '</pre>');
+  }
+  return s;
+}
+
+function program(vsId, fsId) {
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(gl.VERTEX_SHADER,   document.getElementById(vsId).textContent, vsId));
+  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, document.getElementById(fsId).textContent, fsId));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+    fatal('着色器链接失败：<br><pre style="text-align:left;font-size:12px">' + gl.getProgramInfoLog(p) + '</pre>');
+  }
+  return p;
+}
+
+/* 取出所有 uniform / attribute 位置 */
+function locs(p, uniforms, attribs) {
+  const o = { p, u: {}, a: {} };
+  uniforms.forEach(n => { o.u[n] = gl.getUniformLocation(p, n); });
+  attribs.forEach(n => { o.a[n] = gl.getAttribLocation(p, n); });
+  return o;
+}
+
+const progScene  = locs(program('vs-scene', 'fs-scene'),
+  ['uProj', 'uView', 'uSunDir', 'uSunColor', 'uMoonDir', 'uMoonColor', 'uAmbient',
+   'uWallColor', 'uGlassColor', 'uWindowColor', 'uFogColor', 'uCamPos',
+   'uWaterDeep', 'uMisc', 'uRiver', 'uRiver2', 'uCity'],
+  ['aPos', 'aNrm', 'aUV', 'aCol', 'aMat']);
+
+const progSky    = locs(program('vs-sky', 'fs-sky'),
+  ['uCamRight', 'uCamUp', 'uCamFwd', 'uTanHalf', 'uAspect',
+   'uZenith', 'uHorizon', 'uSunGlowDir', 'uSunGlowColor', 'uNight'],
+  ['aNdc']);
+
+const progShadow = locs(program('vs-shadow', 'fs-shadow'),
+  ['uProj', 'uView', 'uCamPos', 'uFogDensity', 'uStrength'],
+  ['aPos']);
+
+/* ---------- 缓冲 ---------- */
+function makeBuffer(data, dynamic) {
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, data, dynamic ? gl.DYNAMIC_DRAW : gl.STATIC_DRAW);
+  return buf;
+}
+
+generateCity(20240917);
+buildRoads(20240917);
+
+/* 楼宇 + 地标 + 树木 + 桥梁合并成一个静态网格，一次绘制 */
+const cityMesh   = buildCityMesh();
+{
+  const rnd = mulberry32(0x5EED);
+  buildLandmarks(cityMesh);
+  buildTrees(cityMesh, rnd);
+  buildBridges(cityMesh, roads);
+  buildExpressway(cityMesh);
+  for (const ic of INTERCHANGES) buildInterchange(cityMesh, ic);
+}
+const groundMesh = buildGroundMesh(1600, 120, 0.30);
+const waterMesh  = buildWaterMesh();
+const skyQuad    = new Float32Array([-1, -1, 3, -1, -1, 3]);   // 覆盖全屏的大三角形
+
+/* 阴影投射体 = 楼宇 + 地标。别墅和矮房投出的影子又小又淡，
+   数量却占了近一半，直接排除，省下大量凸包计算。 */
+shadowCasters.length = 0;
+for (const b of buildings) if (b.h >= 15) shadowCasters.push(b);
+for (const L of LANDMARKS) if (L.shadow) {
+  shadowCasters.push({ x: L.x, z: L.z, w: L.shadow.w, d: L.shadow.d, h: L.shadow.h });
+}
+
+const cityF32   = new Float32Array(cityMesh);
+const groundF32 = new Float32Array(groundMesh);
+const waterF32  = new Float32Array(waterMesh);
+
+const bufCity   = makeBuffer(cityF32, false);
+const bufGround = makeBuffer(groundF32, false);
+const bufWater  = makeBuffer(waterF32, false);
+const bufSky    = makeBuffer(skyQuad, false);
+const bufShadow = makeBuffer(shadowData, true);
+const bufCars   = makeBuffer(carBuf, true);
+
+const CITY_VERTS   = cityF32.length / FLOATS_PER_VERT;
+const GROUND_VERTS = groundF32.length / FLOATS_PER_VERT;
+const WATER_VERTS  = waterF32.length / FLOATS_PER_VERT;
+
+const STRIDE = FLOATS_PER_VERT * 4;
+
+/* WebGL1 没有 VAO，顶点属性数组是全局状态：切换程序时必须关掉用不到的数组。
+   否则它们仍按上一次设置的指针取数据，一旦越界，整个 draw 会被驱动丢弃。 */
+const ALL_ATTRIBS = [progScene.a.aPos, progScene.a.aNrm, progScene.a.aUV,
+                     progScene.a.aCol, progScene.a.aMat,
+                     progSky.a.aNdc, progShadow.a.aPos].filter(i => i >= 0);
+const ATTRIB_MAX = Math.max(4, ...ALL_ATTRIBS);
+
+function useAttribs(list) {
+  for (let i = 0; i <= ATTRIB_MAX; i++) gl.disableVertexAttribArray(i);
+  for (const i of list) if (i >= 0) gl.enableVertexAttribArray(i);
+}
+
+/* 按场景着色器的顶点布局绑定属性（调用前需先 bindBuffer） */
+function bindSceneAttribs() {
+  gl.vertexAttribPointer(progScene.a.aPos, 3, gl.FLOAT, false, STRIDE, 0);
+  gl.vertexAttribPointer(progScene.a.aNrm, 3, gl.FLOAT, false, STRIDE, 12);
+  gl.vertexAttribPointer(progScene.a.aUV,  2, gl.FLOAT, false, STRIDE, 24);
+  gl.vertexAttribPointer(progScene.a.aCol, 3, gl.FLOAT, false, STRIDE, 32);
+  gl.vertexAttribPointer(progScene.a.aMat, 1, gl.FLOAT, false, STRIDE, 44);
+  useAttribs([progScene.a.aPos, progScene.a.aNrm, progScene.a.aUV,
+              progScene.a.aCol, progScene.a.aMat]);
+}
+
+/* =========================================================
+   6. 昼夜循环
+   ========================================================= */
+const SKY = {
+  dayZenith:   [0.20, 0.44, 0.86], dayHorizon:   [0.70, 0.82, 0.96],
+  duskZenith:  [0.24, 0.26, 0.55], duskHorizon:  [1.00, 0.52, 0.26],
+  nightZenith: [0.010, 0.016, 0.045], nightHorizon: [0.055, 0.075, 0.155],
+};
+const SUN_DAY  = [1.00, 0.96, 0.88];
+const SUN_DUSK = [1.00, 0.58, 0.30];
+const MOON     = [0.34, 0.46, 0.78];
+const MOON_DIR = normalize3([0.38, 0.70, 0.60]);
+
+const TILT = 0.42;    // 太阳轨道的倾斜角
+
+let timeOfDay = 0.70; // 0=午夜 0.25=日出 0.5=正午 0.75=日落
+let timePaused = false;
+const DAY_SECONDS = 150;
+
+function sunDirection(t) {
+  const a = (t - 0.25) * Math.PI * 2;
+  return normalize3([Math.cos(a), Math.sin(a) * Math.cos(TILT), Math.sin(a) * Math.sin(TILT)]);
+}
+
+function computeLighting(t) {
+  const sun = sunDirection(t);          // 全天连续变化，不做任何插值替换
+  const elev = sun[1];
+
+  const day   = smoothstep(-0.06, 0.22, elev);
+  const dusk  = clamp(1 - Math.abs(elev) / 0.30, 0, 1);
+  const night = 1 - day;
+
+  // 太阳强度随仰角平滑升落；落到地平线以下就自然归零
+  const sunPower = smoothstep(-0.10, 0.06, elev);
+  const sunTint  = mix3([1, 1, 1], SUN_DUSK, SUN_DAY, day, dusk);
+  const sunColor = [sunTint[0] * sunPower, sunTint[1] * sunPower, sunTint[2] * sunPower];
+
+  // 月光是一盏固定的冷色补光，只在夜里亮起
+  const moonDir  = MOON_DIR;
+  const moonI    = night * 0.26;
+  const moonColor = [MOON[0] * moonI, MOON[1] * moonI, MOON[2] * moonI];
+
+  const ambient = mix3([0.075, 0.090, 0.165], [0.20, 0.19, 0.24], [0.36, 0.39, 0.45], day, dusk);
+
+  const zenith  = mix3(SKY.nightZenith,  SKY.duskZenith,  SKY.dayZenith,  day, dusk);
+  const horizon = mix3(SKY.nightHorizon, SKY.duskHorizon, SKY.dayHorizon, day, dusk);
+
+  // 太阳落到地平线以下后，光晕改由月亮承担
+  const glowDir = sunPower > 0.15 ? sun : [-moonDir[0], moonDir[1], -moonDir[2]];
+  const glowCol = sunPower > 0.15
+    ? [sunTint[0] * 0.9, sunTint[1] * 0.85, sunTint[2] * 0.8]
+    : [0.6, 0.68, 0.9];
+
+  return { sun, elev, day, dusk, night, sunPower,
+           sunDir: sun, sunColor, moonDir, moonColor,
+           ambient, zenith, horizon, glowDir, glowCol };
+}
+
+/* =========================================================
+   7. 相机
+   ========================================================= */
+const cam = {
+  target: [0, 12, 0],
+  dist: 860,
+  yaw: 0.72,
+  pitch: 0.40,
+  fov: 52 * Math.PI / 180,
+};
+const CAM_DEFAULT = JSON.parse(JSON.stringify(cam));
+let autoTour = false;
+
+function cameraEye() {
+  const cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch);
+  return [
+    cam.target[0] + cam.dist * cp * Math.sin(cam.yaw),
+    cam.target[1] + cam.dist * sp,
+    cam.target[2] + cam.dist * cp * Math.cos(cam.yaw),
+  ];
+}
+
+/* =========================================================
+   8. 输入
+   ========================================================= */
+const keys = Object.create(null);
+let drag = null;
+
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+canvas.addEventListener('pointerdown', e => {
+  canvas.setPointerCapture(e.pointerId);
+  drag = { x: e.clientX, y: e.clientY, pan: e.button === 2 || e.shiftKey };
+  canvas.classList.add('dragging');
+});
+
+canvas.addEventListener('pointermove', e => {
+  if (!drag) return;
+  const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+  drag.x = e.clientX; drag.y = e.clientY;
+
+  if (drag.pan) {
+    // 沿相机的右方向 / 前方向（投影到地面）平移焦点
+    const eye = cameraEye();
+    const fwd = normalize3([cam.target[0] - eye[0], 0, cam.target[2] - eye[2]]);
+    const right = normalize3(cross3(fwd, [0, 1, 0]));
+    const k = cam.dist * 0.0016;
+    for (let i = 0; i < 3; i++) cam.target[i] += (-right[i] * dx + fwd[i] * dy) * k;
+    cam.target[1] = clamp(cam.target[1], 0, 160);
+  } else {
+    cam.yaw   -= dx * 0.005;
+    cam.pitch = clamp(cam.pitch + dy * 0.004, 0.02, 1.50);
+  }
+});
+
+const endDrag = () => { drag = null; canvas.classList.remove('dragging'); };
+canvas.addEventListener('pointerup', endDrag);
+canvas.addEventListener('pointercancel', endDrag);
+
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  cam.dist = clamp(cam.dist * Math.exp(e.deltaY * 0.0011), 40, 1500);
+}, { passive: false });
+
+window.addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  keys[k] = true;
+
+  if (k === ' ') { autoTour = !autoTour; e.preventDefault(); }
+  if (k === 't') timePaused = !timePaused;
+  if (k === 'n') timeOfDay = (timeOfDay > 0.25 && timeOfDay < 0.75) ? 0.02 : 0.42;
+  if (k === 'r') {
+    cam.target = CAM_DEFAULT.target.slice();
+    cam.dist = CAM_DEFAULT.dist; cam.yaw = CAM_DEFAULT.yaw; cam.pitch = CAM_DEFAULT.pitch;
+    autoTour = false;
+  }
+  if (['w', 'a', 's', 'd', ' '].includes(k)) e.preventDefault();
+});
+window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
+window.addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
+
+function applyKeyboardPan(dt) {
+  let mx = 0, mz = 0;
+  if (keys['w'] || keys['arrowup'])    mz += 1;
+  if (keys['s'] || keys['arrowdown'])  mz -= 1;
+  if (keys['a'] || keys['arrowleft'])  mx -= 1;
+  if (keys['d'] || keys['arrowright']) mx += 1;
+  if (!mx && !mz) return;
+
+  const eye = cameraEye();
+  const fwd = normalize3([cam.target[0] - eye[0], 0, cam.target[2] - eye[2]]);
+  const right = normalize3(cross3(fwd, [0, 1, 0]));
+  const sp = cam.dist * 0.9 * dt;
+  for (let i = 0; i < 3; i++) {
+    cam.target[i] += (right[i] * mx + fwd[i] * mz) * sp;
+  }
+  cam.target[1] = clamp(cam.target[1], 0, 160);
+}
+
+/* =========================================================
+   9. 尺寸
+   ========================================================= */
+const projMat = mat4.create();
+const viewMat = mat4.create();
+let aspect = 1;
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = Math.max(1, Math.round(canvas.clientWidth  * dpr));
+  const h = Math.max(1, Math.round(canvas.clientHeight * dpr));
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w; canvas.height = h;
+  }
+  aspect = w / h;
+  gl.viewport(0, 0, w, h);
+}
+window.addEventListener('resize', resize);
+
+/* =========================================================
+   10. 渲染
+   ========================================================= */
+gl.enable(gl.DEPTH_TEST);
+gl.enable(gl.CULL_FACE);
+gl.cullFace(gl.BACK);
+
+const CULL_FACE_ON = () => gl.enable(gl.CULL_FACE);
+
+let shadowVerts = 0;                  // 上一帧阴影顶点数（0 表示需要重算）
+const lastShadowDir = [9, 9, 9];      // 上次生成阴影时的太阳方向
+let shaderTime = 0;                   // 水面波纹用的时间（秒）
+
+function drawSky(L, eye) {
+  const fwd = normalize3([cam.target[0] - eye[0], cam.target[1] - eye[1], cam.target[2] - eye[2]]);
+  const right = normalize3(cross3(fwd, [0, 1, 0]));
+  const up = cross3(right, fwd);
+
+  gl.useProgram(progSky.p);
+  gl.disable(gl.DEPTH_TEST);
+  gl.disable(gl.CULL_FACE);      // 全屏三角形，别被剔除掉
+
+  gl.uniform3fv(progSky.u.uCamRight, right);
+  gl.uniform3fv(progSky.u.uCamUp, up);
+  gl.uniform3fv(progSky.u.uCamFwd, fwd);
+  gl.uniform1f(progSky.u.uTanHalf, Math.tan(cam.fov / 2));
+  gl.uniform1f(progSky.u.uAspect, aspect);
+  gl.uniform3fv(progSky.u.uZenith, L.zenith);
+  gl.uniform3fv(progSky.u.uHorizon, L.horizon);
+  gl.uniform3fv(progSky.u.uSunGlowDir, L.glowDir);
+  gl.uniform3fv(progSky.u.uSunGlowColor, L.glowCol);
+  gl.uniform1f(progSky.u.uNight, L.night);
+
+  gl.bindBuffer(gl.ARRAY_BUFFER, bufSky);
+  gl.vertexAttribPointer(progSky.a.aNdc, 2, gl.FLOAT, false, 0, 0);
+  useAttribs([progSky.a.aNdc]);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  gl.enable(gl.DEPTH_TEST);
+  CULL_FACE_ON();
+}
+
+/* 统一的场景着色器状态设置 */
+/* 只设置场景着色器的状态并绑定缓冲，不负责绘制 */
+function setSceneState(L, eye, buf) {
+  gl.useProgram(progScene.p);
+  gl.uniformMatrix4fv(progScene.u.uProj, false, projMat);
+  gl.uniformMatrix4fv(progScene.u.uView, false, viewMat);
+  gl.uniform3fv(progScene.u.uSunDir, L.sunDir);
+  gl.uniform3fv(progScene.u.uSunColor, L.sunColor);
+  gl.uniform3fv(progScene.u.uMoonDir, L.moonDir);
+  gl.uniform3fv(progScene.u.uMoonColor, L.moonColor);
+  gl.uniform3fv(progScene.u.uAmbient, L.ambient);
+  gl.uniform3fv(progScene.u.uCamPos, eye);
+  gl.uniform3fv(progScene.u.uWallColor,  [0.33, 0.35, 0.41]);
+  gl.uniform3fv(progScene.u.uGlassColor, [0.26, 0.40, 0.55]);
+  gl.uniform3fv(progScene.u.uWindowColor,[1.00, 0.86, 0.60]);
+  gl.uniform3fv(progScene.u.uFogColor, L.horizon);
+  gl.uniform3fv(progScene.u.uWaterDeep, [0.020, 0.045, 0.075]);
+  gl.uniform3fv(progScene.u.uMisc, [0.0018, L.night, shaderTime]);
+  gl.uniform4fv(progScene.u.uRiver,  [RIVER.amp, RIVER.freq, RIVER.halfW, RIVER.offset]);
+  gl.uniform4fv(progScene.u.uRiver2, [RIVER.amp2, RIVER.freq2, RIVER.bank, RIVER.level]);
+  gl.uniform4fv(progScene.u.uCity,   [SUBURB_R, RING_HALF, 0.80, GREEN_BELT]);
+
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  bindSceneAttribs();
+}
+
+function drawShadows(L, eye) {
+  // 阴影只由太阳产生：强度随太阳仰角增减，太阳落山后自然消失
+  const strength = smoothstep(0.09, 0.30, L.elev) * 0.42 * L.sunPower;
+  if (strength <= 0.01) { shadowVerts = 0; return; }
+
+  // 太阳方向变化很小时直接复用上一帧的缓冲，省掉 700 多次凸包计算
+  const moved = Math.abs(L.sunDir[0] - lastShadowDir[0]) +
+                Math.abs(L.sunDir[1] - lastShadowDir[1]) +
+                Math.abs(L.sunDir[2] - lastShadowDir[2]);
+  if (moved > 0.0025 || shadowVerts === 0) {
+    const lightTravel = [-L.sunDir[0], -L.sunDir[1], -L.sunDir[2]];
+    const n = buildShadows(lightTravel);
+    if (n === 0) { shadowVerts = 0; return; }
+    gl.bindBuffer(gl.ARRAY_BUFFER, bufShadow);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, shadowData.subarray(0, n * 3));
+    shadowVerts = n;
+    lastShadowDir[0] = L.sunDir[0];
+    lastShadowDir[1] = L.sunDir[1];
+    lastShadowDir[2] = L.sunDir[2];
+  }
+
+  gl.useProgram(progShadow.p);
+  gl.uniformMatrix4fv(progShadow.u.uProj, false, projMat);
+  gl.uniformMatrix4fv(progShadow.u.uView, false, viewMat);
+  gl.uniform3fv(progShadow.u.uCamPos, eye);
+  gl.uniform1f(progShadow.u.uFogDensity, 0.0018);
+  gl.uniform1f(progShadow.u.uStrength, strength);
+
+  gl.bindBuffer(gl.ARRAY_BUFFER, bufShadow);
+  gl.vertexAttribPointer(progShadow.a.aPos, 3, gl.FLOAT, false, 0, 0);
+  useAttribs([progShadow.a.aPos]);
+
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.DST_COLOR, gl.ZERO);   // 正片叠底：dst = dst * src
+  gl.depthMask(false);
+  gl.disable(gl.CULL_FACE);              // 影子是平面多边形，绕序不固定
+  gl.drawArrays(gl.TRIANGLES, 0, shadowVerts);
+  gl.enable(gl.CULL_FACE);
+  gl.depthMask(true);
+  gl.disable(gl.BLEND);
+}
+
+/* =========================================================
+   11. 主循环
+   ========================================================= */
+const elFps = document.getElementById('fps');
+const elCount = document.getElementById('count');
+const elTrees = document.getElementById('trees');
+const elBridges = document.getElementById('bridges');
+const elCars = document.getElementById('cars');
+const elTris = document.getElementById('tris');
+const elClock = document.getElementById('clock');
+const elPhase = document.getElementById('phase');
+
+const elKinds = document.getElementById('kinds');
+const elIcs = document.getElementById('ics');
+elCount.textContent = cityStats.total.toLocaleString();
+elKinds.textContent = BLD_KINDS.map(k => cityStats.kinds[k] || 0).join(' / ');
+elTrees.textContent = cityStats.trees.toLocaleString();
+elBridges.textContent = cityStats.bridges.toLocaleString();
+elCars.textContent = cars.length.toLocaleString();
+elIcs.textContent = INTERCHANGES.length + ' 座';
+const TOTAL_TRIS = Math.round((CITY_VERTS + GROUND_VERTS + WATER_VERTS) / 3);
+elTris.textContent = TOTAL_TRIS.toLocaleString();
+
+function phaseName(t) {
+  if (t < 0.22) return '深夜';
+  if (t < 0.30) return '日出';
+  if (t < 0.44) return '上午';
+  if (t < 0.56) return '正午';
+  if (t < 0.70) return '下午';
+  if (t < 0.80) return '黄昏';
+  return '夜晚';
+}
+
+let last = performance.now();
+let fpsAcc = 0, fpsFrames = 0;
+
+function frame(now) {
+  let dt = (now - last) / 1000;
+  last = now;
+  if (dt > 0.1) dt = 0.1;           // 切标签页回来时不要瞬移
+
+  if (!timePaused) timeOfDay = (timeOfDay + dt / DAY_SECONDS) % 1;
+  shaderTime += dt;
+  updateCars(dt);
+
+  if (autoTour) {
+    cam.yaw += dt * 0.075;
+    cam.pitch = 0.34 + Math.sin(now * 0.00013) * 0.14;
+    cam.dist  = 860 + Math.sin(now * 0.00007) * 210;
+  }
+  applyKeyboardPan(dt);
+
+  resize();
+  const L = computeLighting(timeOfDay);
+  const eye = cameraEye();
+
+  mat4.perspective(projMat, cam.fov, aspect, 2, 5000);
+  mat4.lookAt(viewMat, eye, cam.target, [0, 1, 0]);
+
+  gl.clearColor(L.horizon[0], L.horizon[1], L.horizon[2], 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+  drawSky(L, eye);
+
+  // 地面 / 水面 / 楼宇 / 车流 共用场景着色器，一次设置状态、多次绘制
+  setSceneState(L, eye, bufGround);
+  gl.drawArrays(gl.TRIANGLES, 0, GROUND_VERTS);
+
+  // 水面比地面高 0.18m，用多边形偏移再拉开一点，彻底消除 z-fighting
+  gl.enable(gl.POLYGON_OFFSET_FILL);
+  gl.polygonOffset(-2, -2);
+  gl.bindBuffer(gl.ARRAY_BUFFER, bufWater);
+  bindSceneAttribs();
+  gl.drawArrays(gl.TRIANGLES, 0, WATER_VERTS);
+  gl.disable(gl.POLYGON_OFFSET_FILL);
+
+  setSceneState(L, eye, bufCity);
+  gl.drawArrays(gl.TRIANGLES, 0, CITY_VERTS);
+
+  const carCount = buildCarMesh();
+  if (carCount > 0) {
+    gl.bindBuffer(gl.ARRAY_BUFFER, bufCars);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, carBuf.subarray(0, carCount * FLOATS_PER_VERT));
+    bindSceneAttribs();
+    gl.drawArrays(gl.TRIANGLES, 0, carCount);
+  }
+
+  drawShadows(L, eye);
+
+  // HUD
+  fpsAcc += dt; fpsFrames++;
+  if (fpsAcc >= 0.5) {
+    elFps.textContent = Math.round(fpsFrames / fpsAcc);
+    fpsAcc = 0; fpsFrames = 0;
+  }
+  const mins = Math.round(timeOfDay * 1440);
+  elClock.textContent = String(Math.floor(mins / 60)).padStart(2, '0') + ':' +
+                        String(mins % 60).padStart(2, '0');
+  elPhase.textContent = phaseName(timeOfDay) + (timePaused ? ' · 已暂停' : '');
+
+  requestAnimationFrame(frame);
+}
+
+resize();
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>
